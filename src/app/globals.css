@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 225 10% 96%;
+    --foreground: 225 20% 15%;
+    --card: 0 0% 100%;
+    --card-foreground: 225 20% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 225 20% 15%;
+    --primary: 38 92% 50%; /* Amber 500 equivalent */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 225 20% 90%;
+    --secondary-foreground: 225 60% 20%;
+    --muted: 225 10% 90%;
+    --muted-foreground: 225 10% 40%;
+    --accent: 38 92% 50%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 225 10% 85%;
+    --input: 225 10% 85%;
+    --ring: 38 92% 50%;
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-gray-100 text-foreground antialiased;
+    font-family: 'Poppins', sans-serif;
+  }
+}
+
+.gradient-header {
+  background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 50%, #fcd34d 100%);
+}
+
+.gradient-btn {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+}
+
+.gradient-btn:hover {
+  background: linear-gradient(135deg, #d97706 0%, #b45309 100%);
+}
+
+.card-shadow {
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.status-available { background-color: #10b981; }
+.status-booked { background-color: #ef4444; }
+.status-blocked { background-color: #6b7280; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: #fbbf24; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #f59e0b; }
