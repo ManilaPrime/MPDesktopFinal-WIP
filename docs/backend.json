@@ -1,0 +1,81 @@
+
+{
+  "entities": {
+    "Unit": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Unit",
+      "type": "object",
+      "description": "Represents a rentable property unit managed by HostFlow Admin.",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "rate": { "type": "number" },
+        "maxOccupancy": { "type": "number" },
+        "baseOccupancy": { "type": "number" },
+        "extraGuestFee": { "type": "number" },
+        "status": { "type": "string", "enum": ["available", "occupied", "maintenance"] },
+        "description": { "type": "string" },
+        "wifiNetwork": { "type": "string" },
+        "wifiPassword": { "type": "string" },
+        "calendars": {
+          "type": "object",
+          "properties": {
+            "airbnb": { "type": "string", "format": "uri" },
+            "bookingCom": { "type": "string", "format": "uri" },
+            "direct": { "type": "string", "format": "uri" }
+          }
+        }
+      },
+      "required": ["id", "name", "rate"]
+    },
+    "Booking": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Booking",
+      "type": "object",
+      "description": "Represents a reservation for a specific unit.",
+      "properties": {
+        "id": { "type": "string" },
+        "bookingId": { "type": "string" },
+        "unitId": { "type": "string" },
+        "guestFirstName": { "type": "string" },
+        "guestLastName": { "type": "string" },
+        "guestEmail": { "type": "string", "format": "email" },
+        "guestPhone": { "type": "string" },
+        "checkinDate": { "type": "string", "format": "date" },
+        "checkoutDate": { "type": "string", "format": "date" },
+        "nightlyRate": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "paymentStatus": { "type": "string", "enum": ["pending", "partial", "paid"] },
+        "adults": { "type": "number" },
+        "children": { "type": "number" },
+        "specialRequests": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "unitId", "checkinDate", "checkoutDate", "guestFirstName", "guestLastName", "nightlyRate"]
+    }
+  },
+  "auth": {
+    "providers": ["password", "anonymous"]
+  },
+  "firestore": {
+    "structure": [
+      {
+        "path": "/users/{userId}/units/{unitId}",
+        "definition": {
+          "entityName": "Unit",
+          "schema": { "$ref": "#/backend/entities/Unit" },
+          "description": "Property units."
+        }
+      },
+      {
+        "path": "/users/{userId}/bookings/{bookingId}",
+        "definition": {
+          "entityName": "Booking",
+          "schema": { "$ref": "#/backend/entities/Booking" },
+          "description": "Reservations."
+        }
+      }
+    ]
+  }
+}
