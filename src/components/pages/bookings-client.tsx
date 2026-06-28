@@ -24,6 +24,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/utils-app";
 import { cn } from "@/lib/utils";
+import { useDialogCleanup } from "@/hooks/use-dialog-cleanup";
 import html2canvas from "html2canvas";
 
 function dataUrlToUint8Array(dataUrl: string) {
@@ -69,23 +70,7 @@ export default function BookingsClient() {
 
   const bookingSummaryCardRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    if (isDialogOpen) return;
-
-    const cleanupDocumentInteractivity = () => {
-      document.body.style.pointerEvents = '';
-      document.body.removeAttribute('data-scroll-locked');
-    };
-
-    cleanupDocumentInteractivity();
-    const timeoutId = window.setTimeout(cleanupDocumentInteractivity, 0);
-    const frameId = window.requestAnimationFrame(cleanupDocumentInteractivity);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [isDialogOpen]);
+  useDialogCleanup(isDialogOpen);
 
   useEffect(() => {
     let cancelled = false;
@@ -167,7 +152,7 @@ export default function BookingsClient() {
   const getBookingGuestName = (booking: any) => `${booking?.guestFirstName || ''} ${booking?.guestLastName || ''}`.trim() || booking?.guestName || 'Valued Guest';
   const getBookingUnitName = (booking: any) => findUnitForBooking(booking?.unitId)?.name || booking?.unitName || 'Unassigned';
   const getBookingWifiNetwork = (booking: any) => findUnitForBooking(booking?.unitId)?.wifiNetwork || booking?.wifiNetwork || 'Available upon arrival';
-  const getBookingWifiPassword = (booking: any) => findUnitForBooking(booking?.unitId)?.wifiPassword || booking?.wifiPassword || 'Ask team upon check-in';
+  const getBookingWifiPassword = (booking: any) => findUnitForBooking(booking?.unitId)?.wifiPassword || booking?.wifiPassword || 'Please ask our team upon check-in';
 
   const handleCopyAuthorizationLetter = async () => {
     if (!editingBooking) return;
@@ -264,12 +249,16 @@ export default function BookingsClient() {
       const paymentStatus = editingBooking?.paymentStatus || 'Unpaid';
       const depositStatus = editingBooking?.securityDepositStatus || 'Unpaid';
       const selectedAgent = agents.find((a: any) => String(a.id) === String(editingBooking?.agentId || ''));
+      // Since the input is always editable, if the user hasn't edited it manually (isCustomAmount = false),
+      // we still want to send the displayed auto-calculated amount as a custom amount to lock it in.
+      const finalTotalAmount = editingBooking?.isCustomAmount ? toNumber(editingBooking?.totalAmount) : autoCalculatedAmount;
       
       const payload = {
         ...editingBooking,
         uid: user?.uid,
+        isCustomAmount: true,
         agentName: selectedAgent?.name || '',
-        totalAmount: editingBooking?.isCustomAmount ? toNumber(editingBooking?.totalAmount) : autoCalculatedAmount,
+        totalAmount: finalTotalAmount,
         paymentStatus,
         bookingPaymentStatus: paymentStatus,
         securityDepositStatus: depositStatus,
@@ -278,16 +267,56 @@ export default function BookingsClient() {
         securityDepositReceipt: { ...editingBooking.securityDepositReceipt, status: depositStatus },
       };
 
+      let savedBookingId = editingBooking?.id || '';
       if (editingBooking?.id) {
         await apiClient.put(`/booking/${editingBooking.id}`, payload, auth);
         toast({ title: "Success", description: "Booking updated." });
       } else {
-        await apiClient.post('/booking', payload, auth);
+        const res = await apiClient.post<any>('/booking', payload, auth);
+        savedBookingId = res?.id || res?.data?.id || '';
         toast({ title: "Success", description: "New booking created." });
+      }
+
+
+
+      // Auto-create agent commission expense
+      if (editingBooking?.agentId && selectedAgent) {
+        const checkin = new Date(editingBooking.checkinDate);
+        const checkout = new Date(editingBooking.checkoutDate);
+        const nights = Math.max(1, Math.round((checkout.getTime() - checkin.getTime()) / (1000 * 60 * 60 * 24)));
+        const baseRate = toNumber(selectedUnit?.rate, 0);
+
+        const commissionAmount = Math.max(0, finalTotalAmount - (baseRate * nights));
+
+        if (commissionAmount > 0) {
+          const guestName = `${editingBooking.guestFirstName || ''} ${editingBooking.guestLastName || ''}`.trim();
+          try {
+            await apiClient.post('/expense', {
+              uid: user?.uid,
+              title: `Commission - ${selectedAgent.name} - ${guestName}`,
+              category: 'Agent Commission',
+              agentId: editingBooking.agentId,
+              agentName: selectedAgent.name || '',
+              bookingId: savedBookingId,
+              amount: Math.round(commissionAmount * 100) / 100,
+              date: editingBooking.checkinDate,
+              commissionStatus: 'on hold',
+              unitId: editingBooking.unitId || '',
+              unitName: selectedUnit?.name || '',
+              paymentMethod: 'CASH',
+              notes: `Auto-generated commission for ${guestName} (${nights} nights)`,
+              createdAt: new Date().toISOString(),
+            }, auth);
+          } catch (err) {
+            console.error('Failed to create agent commission:', err);
+          }
+        }
       }
 
       setIsDialogOpen(false);
       await bookingsResources.refresh();
+      // Invalidate payment/deposit caches so Payments page shows fresh data
+      bookingsResources.invalidate(['booking-payments', 'security-deposits']);
     } catch (error: any) {
       toast({ variant: "destructive", title: "Error", description: error.message });
     } finally {
@@ -303,6 +332,8 @@ export default function BookingsClient() {
       toast({ title: "Deleted", description: "The booking and ledgers were removed." });
       if (editingBooking?.id === booking.id) { setIsDialogOpen(false); setEditingBooking(null); }
       await bookingsResources.refresh();
+      // Invalidate payment/deposit caches so Payments page shows fresh data
+      bookingsResources.invalidate(['booking-payments', 'security-deposits']);
     } catch (error: any) {
       toast({ variant: "destructive", title: "Failed", description: error?.message });
     } finally {
@@ -438,10 +469,9 @@ export default function BookingsClient() {
             <div className="rounded-xl border p-4 space-y-4">
               <div className="flex justify-between items-center">
                 <div><p className="font-semibold">Pricing</p><p className="text-xs text-muted-foreground">{totalNights} night(s)</p></div>
-                <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={Boolean(editingBooking?.isCustomAmount)} onChange={e => setEditingBooking({ ...editingBooking, isCustomAmount: e.target.checked })}/> Use fixed amount</label>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1"><Label>Total Amount</Label><Input type="number" min="0" value={editingBooking?.isCustomAmount ? (editingBooking?.totalAmount ?? 0) : displayedTotalAmount} disabled={!editingBooking?.isCustomAmount} onChange={e => setEditingBooking({ ...editingBooking, totalAmount: e.target.value })} /></div>
+                <div className="space-y-1"><Label>Total Amount</Label><Input type="number" min="0" value={editingBooking?.isCustomAmount ? (editingBooking?.totalAmount ?? 0) : displayedTotalAmount} onChange={e => setEditingBooking({ ...editingBooking, isCustomAmount: true, totalAmount: e.target.value })} /></div>
                 <div className="space-y-1"><Label>Nightly Rate</Label><Input value={selectedUnit ? formatCurrency(selectedUnit.rate || 0) : '-'} disabled /></div>
               </div>
             </div>
@@ -484,17 +514,88 @@ export default function BookingsClient() {
           
           {/* INVISIBLE SNAPSHOT DIV */}
           <div aria-hidden="true" className="pointer-events-none fixed left-[-10000px] top-0 opacity-100">
-             <div ref={bookingSummaryCardRef} className="overflow-hidden rounded-[36px] border-2 border-[#EFD45C] bg-[#141414] text-[#F7F4EA]" style={{ width: 1080, minHeight: 1480 }}>
-                <div className="rounded-t-[34px] bg-[#EFD45C] px-14 pb-10 pt-10 text-[#0B0B0B]">
-                   <h2 className="text-center text-[44px] font-bold leading-tight">Welcome to Manila Prime</h2>
+             <div ref={bookingSummaryCardRef} className="overflow-hidden rounded-[36px] border-4 border-[#EFD45C] bg-[#0B0B0B] text-[#F7F4EA]" style={{ width: 1080, minHeight: 1480, fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+                {/* Header Section */}
+                <div className="bg-[#EFD45C] px-[72px] pb-10 pt-12 text-[#0B0B0B] rounded-t-[32px]">
+                   <div className="flex items-center gap-5">
+                      {/* Logo */}
+                      <div className="w-[72px] h-[72px] rounded-full border-[5px] border-black bg-transparent flex items-center justify-center">
+                         <span className="text-[36px] font-black tracking-tighter text-black">MP</span>
+                      </div>
+                      {/* Title */}
+                      <div className="text-left">
+                         <h2 className="text-[30px] font-black text-black leading-tight tracking-tight uppercase">Manila Prime</h2>
+                         <p className="text-[24px] font-extrabold text-black leading-none uppercase tracking-widest mt-0.5">Staycation</p>
+                      </div>
+                   </div>
+                   <h1 className="text-center text-[44px] font-black text-black leading-tight tracking-tight mt-10">
+                      Welcome to Manila Prime Staycation
+                   </h1>
                 </div>
-                <div className="px-[94px] pb-[54px] pt-[42px]">
-                   <p className="text-[36px] font-bold leading-none">Dear {getBookingGuestName(editingBooking)},</p>
-                   <div className="mt-8 rounded-[28px] border border-[#2B2B2B] bg-[#111111] px-7 pb-7 pt-6">
-                      <p className="text-[30px] font-bold text-[#EFD45C]">Booking Details</p>
-                      <p className="text-[27px] leading-8 text-[#F7F4EA] mt-4">Unit: {getBookingUnitName(editingBooking)}</p>
-                      <p className="text-[27px] leading-8 text-[#F7F4EA] mt-4">Check-in: {formatBookingCardDate(editingBooking?.checkinDate)}</p>
-                      <p className="text-[27px] leading-8 text-[#F7F4EA] mt-4">Check-out: {formatBookingCardDate(editingBooking?.checkoutDate)}</p>
+
+                {/* Body Section */}
+                <div className="px-[72px] pb-14 pt-12 text-left">
+                   <h2 className="text-[38px] font-black text-white leading-none">
+                      Dear {getBookingGuestName(editingBooking)},
+                   </h2>
+                   <p className="text-[24px] text-[#A3A3A3] leading-relaxed mt-4">
+                      Thank you for booking with us. We are delighted to host you and hope you enjoy a smooth, comfortable, and relaxing stay.
+                   </p>
+
+                   {/* Booking Details Card */}
+                   <div className="mt-10 rounded-[28px] border border-[#2B2B2B] bg-[#111111] px-10 py-9">
+                      <p className="text-[28px] font-black text-[#EFD45C] tracking-wide mb-6">Booking Details</p>
+                      
+                      <div className="space-y-4">
+                         <div className="flex justify-between items-center border-b border-[#222] pb-4">
+                            <span className="text-[24px] font-bold text-white w-1/3">Guest Name</span>
+                            <span className="text-[24px] text-[#E5E5E5] w-2/3">{getBookingGuestName(editingBooking)}</span>
+                         </div>
+                         
+                         <div className="flex justify-between items-center border-b border-[#222] pb-4">
+                            <span className="text-[24px] font-bold text-white w-1/3">Unit</span>
+                            <span className="text-[24px] text-[#E5E5E5] w-2/3">{getBookingUnitName(editingBooking)}</span>
+                         </div>
+                         
+                         <div className="flex justify-between items-center border-b border-[#222] pb-4">
+                            <span className="text-[24px] font-bold text-white w-1/3">Booking Date</span>
+                            <span className="text-[24px] text-[#E5E5E5] w-2/3">{formatBookingCardDate(getBookingDateValue(editingBooking))}</span>
+                         </div>
+                         
+                         <div className="flex justify-between items-center border-b border-[#222] pb-4">
+                            <span className="text-[24px] font-bold text-white w-1/3">Check-in</span>
+                            <span className="text-[24px] text-[#E5E5E5] w-2/3">{formatBookingCardDate(editingBooking?.checkinDate)}</span>
+                         </div>
+                         
+                         <div className="flex justify-between items-center pb-2">
+                            <span className="text-[24px] font-bold text-white w-1/3">Check-out</span>
+                            <span className="text-[24px] text-[#E5E5E5] w-2/3">{formatBookingCardDate(editingBooking?.checkoutDate)}</span>
+                         </div>
+                      </div>
+                   </div>
+
+                   {/* Wi-Fi Access Card */}
+                   <div className="mt-8 rounded-[28px] border border-[#2B2B2B] bg-[#111111] px-10 py-9">
+                      <p className="text-[28px] font-black text-[#EFD45C] tracking-wide mb-6">Wi-Fi Access</p>
+                      
+                      <div className="space-y-4">
+                         <div className="flex justify-between items-start border-b border-[#222] pb-4">
+                            <span className="text-[24px] font-bold text-white w-1/3 mt-1">Network</span>
+                            <span className="text-[28px] font-extrabold text-[#EFD45C] w-2/3 leading-tight">{getBookingWifiNetwork(editingBooking)}</span>
+                         </div>
+                         
+                         <div className="flex justify-between items-start pb-2">
+                            <span className="text-[24px] font-bold text-white w-1/3 mt-1">Password</span>
+                            <span className="text-[28px] font-extrabold text-[#EFD45C] w-2/3 leading-tight">{getBookingWifiPassword(editingBooking)}</span>
+                         </div>
+                      </div>
+                   </div>
+
+                   {/* Footer Instructions Note */}
+                   <div className="mt-8 rounded-[24px] border border-[#2B2B2B] px-8 py-6 text-center">
+                      <p className="text-[22px] text-[#A3A3A3] leading-relaxed">
+                         Please keep this card for your arrival. Should you need any assistance before check-in, our team will be happy to help.
+                      </p>
                    </div>
                 </div>
              </div>

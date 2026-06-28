@@ -29,7 +29,7 @@ import {
   Sparkles,
   Wand2
 } from "lucide-react"
-import { formatCurrency, calculateProratedRevenue } from "@/lib/utils-app"
+import { formatCurrency, calculateProratedRevenue, calculateProratedBaseRevenue } from "@/lib/utils-app"
 import { useDateStore } from "@/lib/date-store"
 import { Badge } from "@/components/ui/badge"
 import Link from "next/link"
@@ -93,13 +93,21 @@ export default function AnalyticsClient() {
     if (!data) return []
     return data.units.map(u => {
       const uId = String(u.id)
-      const income = data.bookings.filter(b => String(b.unitId || b.unit_id) === uId).reduce((sum, b) => sum + calculateProratedRevenue(b, month, year), 0)
-      const unitExpenses = data.expenses.filter(e => e.date?.startsWith(monthKey) && e.unitIds?.map(String).includes(uId)).reduce((sum, e) => {
+      const bookings = data.bookings.filter(b => String(b.unitId || b.unit_id) === uId);
+      const revenue = bookings.reduce((sum, b) => sum + calculateProratedRevenue(b, month, year), 0);
+      const grossIncome = bookings.reduce((sum, b) => sum + calculateProratedBaseRevenue(b, month, year), 0);
+      const unitExpenses = data.expenses
+        .filter(e => {
+          const matchesDate = e.date?.startsWith(monthKey);
+          const targetsUnit = e.unitIds && e.unitIds.map(String).includes(String(u.id));
+          return matchesDate && targetsUnit && e.category !== 'Agent Commission';
+        })
+        .reduce((sum, e) => {
           const total = Number(e.calculatedTotal || e.amount || 0);
-          const targetedUnitsCount = e.unitIds?.length || 1;
+          const targetedUnitsCount = (e.unitIds && e.unitIds.length > 0) ? e.unitIds.length : data.units.length;
           return sum + (total / targetedUnitsCount);
         }, 0);
-      return { name: u.name || u.unitNumber, income, expenses: unitExpenses, profit: income - unitExpenses }
+      return { name: u.name || u.unitNumber, revenue, expenses: unitExpenses, profit: grossIncome - unitExpenses }
     }).sort((a, b) => b.profit - a.profit)
   }, [data, month, year, monthKey])
 
@@ -108,16 +116,17 @@ export default function AnalyticsClient() {
     setAiSummary(null)
     
     {
-      let revenue = 0, expense = 0, entityName = "All Entities", commission = 0, investorShare = 0
+      let revenue = 0, grossIncome = 0, expense = 0, entityName = "All Entities", commission = 0, investorShare = 0
 
       if (reportType === "unit") {
         const filteredBookings = data.bookings.filter(b => selectedEntity === "all" || String(b.unitId || b.unit_id) === selectedEntity)
         revenue = filteredBookings.reduce((sum, b) => sum + calculateProratedRevenue(b, month, year), 0)
+        grossIncome = filteredBookings.reduce((sum, b) => sum + calculateProratedBaseRevenue(b, month, year), 0)
         
         expense = data.expenses.filter(e => {
           const matchesDate = e.date?.startsWith(monthKey);
           const isTargeted = selectedEntity === "all" || (e.unitIds && e.unitIds.map(String).includes(selectedEntity));
-          return matchesDate && isTargeted;
+          return matchesDate && isTargeted && e.category !== 'Agent Commission';
         }).reduce((sum, e) => {
           const total = Number(e.calculatedTotal || e.amount || 0);
           const targetedUnitsCount = (e.unitIds && e.unitIds.length > 0) ? e.unitIds.length : data.units.length;
@@ -134,20 +143,18 @@ export default function AnalyticsClient() {
           
           agentBookings.forEach(b => {
             const bRevenue = calculateProratedRevenue(b, month, year);
+            const bGrossIncome = calculateProratedBaseRevenue(b, month, year);
             revenue += bRevenue;
+            grossIncome += bGrossIncome;
 
-            if (agent.commissionType === 'percentage') {
-              commission += (bRevenue * (Number(agent.commissionRate || 0) / 100));
-            } else if (agent.commissionType === 'fixed_commission') {
-              const unit = data.units.find(u => String(u.id) === String(b.unitId));
-              if (unit) {
-                const checkin = new Date(b.checkinDate);
-                const checkout = new Date(b.checkoutDate);
-                const nights = Math.max(1, Math.round((checkout.getTime() - checkin.getTime()) / (1000 * 60 * 60 * 24)));
-                const baseCost = nights * Number(unit.rate || 0);
-                const surplus = Math.max(0, Number(b.totalAmount || 0) - baseCost);
-                commission += (surplus * (bRevenue / Number(b.totalAmount || 1)));
-              }
+            const unit = data.units.find(u => String(u.id) === String(b.unitId));
+            if (unit) {
+              const checkin = new Date(b.checkinDate);
+              const checkout = new Date(b.checkoutDate);
+              const nights = Math.max(1, Math.round((checkout.getTime() - checkin.getTime()) / (1000 * 60 * 60 * 24)));
+              const baseCost = nights * Number(unit.rate || 0);
+              const surplus = Math.max(0, Number(b.totalAmount || 0) - baseCost);
+              commission += (surplus * (bRevenue / Number(b.totalAmount || 1)));
             }
           });
         }
@@ -158,19 +165,22 @@ export default function AnalyticsClient() {
           entityName = investor.name;
           const assignedUnitIds = investor.unitIds?.map(String) || [];
           
-          assignedUnitIds.forEach(uId => {
+          assignedUnitIds.forEach((uId: string) => {
             const uRevenue = data.bookings.filter(b => String(b.unitId || b.unit_id) === uId).reduce((sum, b) => sum + calculateProratedRevenue(b, month, year), 0)
-            const uExpense = data.expenses.filter(e => e.date?.startsWith(monthKey) && e.unitIds?.map(String).includes(uId)).reduce((sum, e) => {
+            const uGrossIncome = data.bookings.filter(b => String(b.unitId || b.unit_id) === uId).reduce((sum, b) => sum + calculateProratedBaseRevenue(b, month, year), 0)
+            const uExpense = data.expenses.filter(e => e.date?.startsWith(monthKey) && e.unitIds?.map(String).includes(uId) && e.category !== 'Agent Commission').reduce((sum, e) => {
               const total = Number(e.calculatedTotal || e.amount || 0);
               return sum + (total / (e.unitIds?.length || 1));
             }, 0);
             
             revenue += uRevenue;
+            grossIncome += uGrossIncome;
             expense += uExpense;
           });
 
-          const netProfit = revenue - expense;
-          investorShare = Math.max(0, netProfit * (Number(investor.sharePercentage || 0) / 100));
+          const netProfit = grossIncome - expense;
+          const companyShare = netProfit * (5 / 6);
+          investorShare = Math.max(0, companyShare * (Number(investor.sharePercentage || 0) / 100));
         }
       }
 
@@ -179,10 +189,11 @@ export default function AnalyticsClient() {
         name: entityName, 
         period: monthKey, 
         revenue, 
-        expense, 
+        grossIncome,
+        expenses: expense, 
+        profit: grossIncome - expense,
         commission,
-        investorShare,
-        profit: revenue - expense 
+        investorShare
       })
       setIsGenerating(false)
     }
@@ -350,7 +361,7 @@ export default function AnalyticsClient() {
                         {reportType === 'unit' && (
                           <div className="p-6 bg-red-50 rounded-2xl border border-red-100 text-left">
                             <span className="text-[10px] uppercase font-bold text-gray-400 block mb-1">Total Expenses</span>
-                            <div className="text-2xl font-black text-red-600">{formatCurrency(generatedReport.expense)}</div>
+                            <div className="text-2xl font-black text-red-600">{formatCurrency(generatedReport.expenses)}</div>
                           </div>
                         )}
 
@@ -370,7 +381,11 @@ export default function AnalyticsClient() {
 
                         <div className="p-6 bg-amber-50 rounded-2xl border border-amber-100 text-left">
                           <span className="text-[10px] uppercase font-bold text-gray-400 block mb-1">Net Flow/Profit</span>
-                          <div className="text-2xl font-black text-amber-600">{formatCurrency(generatedReport.profit)}</div>
+                          <p className="text-3xl font-black text-amber-600 tracking-tight">{formatCurrency(generatedReport.profit)}</p>
+                        </div>
+                        <div className="p-6 bg-blue-50 rounded-2xl border border-blue-100 text-left">
+                          <span className="text-[10px] uppercase font-bold text-gray-400 block mb-1">Gross Income (Base)</span>
+                          <p className="text-3xl font-black text-blue-600 tracking-tight">{formatCurrency(generatedReport.grossIncome || 0)}</p>
                         </div>
                       </div>
 
@@ -423,7 +438,7 @@ export default function AnalyticsClient() {
                 <div className="grid grid-cols-2 gap-3 text-center mb-6">
                   <div className="bg-green-50 p-3 rounded-xl border border-green-100">
                     <span className="text-[9px] uppercase font-bold text-green-700 block mb-1">Revenue</span>
-                    <span className="text-sm font-black text-green-600">{formatCurrency(unit.income)}</span>
+                    <span className="text-sm font-black text-green-600">{formatCurrency(unit.revenue)}</span>
                   </div>
                   <div className="bg-red-50 p-3 rounded-xl border border-red-100">
                     <span className="text-[9px] uppercase font-bold text-red-700 block mb-1">Costs</span>

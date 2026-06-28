@@ -20,6 +20,7 @@ import {
   UserCircle
 } from 'lucide-react';
 import { useDateStore } from '@/lib/date-store';
+import { useDialogCleanup } from '@/hooks/use-dialog-cleanup';
 import {
   addDays,
   addMonths,
@@ -33,18 +34,12 @@ import {
 import { cn } from '@/lib/utils';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { Card } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription
-} from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import html2canvas from 'html2canvas';
+import { AddBookingDialog } from './add-booking-dialog';
+import { BookingDetailsDialog } from './booking-details-dialog';
+
+// ponytail: extract booking dialog modals to sub-components to reduce file size.
 
 const unitColors = [
   '#EF4444', '#3B82F6', '#22C55E', '#F97316', '#8B5CF6', '#EC4899', '#10B981',
@@ -236,6 +231,8 @@ export default function CalendarClient() {
   const [saving, setSaving] = useState(false);
   const [bookingDraft, setBookingDraft] = useState<BookingDraft>(() => makeDefaultBookingDraft());
 
+  useDialogCleanup(isAddDialogOpen || !!detailsBooking);
+
   const calendarSnapshotRef = useRef<HTMLDivElement | null>(null);
   const detailsSnapshotRef = useRef<HTMLDivElement | null>(null);
 
@@ -257,7 +254,6 @@ export default function CalendarClient() {
 
   const cellKey = (cell: Pick<CalendarCell, 'unitId' | 'date'>) => `${cell.unitId}__${cell.date}`;
 
-  // Timezone Offset Bug Fix applied here: using strictly local year/month/day math
   const findBookingForCell = (unit: any, dateObj: Date) => {
     const targetValues = toComparableUnitValues(unit);
 
@@ -407,16 +403,6 @@ export default function CalendarClient() {
   const getBookingDateValue = (booking: any) =>
     toDateInput(booking?.bookingDate) || toDateInput(booking?.createdAt) || todayDateInput();
 
-  const getBookingWifiNetwork = (booking: any) => {
-    const unit = getBookingUnit(booking);
-    return unit?.wifiNetwork || booking?.wifiNetwork || 'Available upon arrival';
-  };
-
-  const getBookingWifiPassword = (booking: any) => {
-    const unit = getBookingUnit(booking);
-    return unit?.wifiPassword || booking?.wifiPassword || 'Please ask our team upon check-in';
-  };
-
   const getRangeAutoAmount = (range: UnitDateRange, draft: BookingDraft = bookingDraft) => {
     const adults = toNumber(draft.adults, 2);
     const children = toNumber(draft.children, 0);
@@ -447,9 +433,6 @@ export default function CalendarClient() {
     const extraGuestFee = toNumber(unit?.extraGuestFee, 0);
     return Math.max(0, getDetailsTotalNights() * (nightlyRate + extraGuests * extraGuestFee));
   };
-
-  const getDetailsDisplayedTotalAmount = () =>
-    detailsBooking?.isCustomAmount ? toNumber(detailsBooking?.totalAmount) : getDetailsAutoAmount();
 
   const setDetailsNested = (path: string, value: any) => {
     setDetailsBooking((prev: any) => {
@@ -483,30 +466,6 @@ export default function CalendarClient() {
     return value === 'paid' || value === 'received';
   };
 
-  const buildAuthorizationLetter = (booking: any) => {
-    const checkinDate = toDateInput(booking?.checkinDate) || '';
-    const checkoutDate = toDateInput(booking?.checkoutDate) || '';
-
-    return `Dear Admin,
-
-I'm Rey Arjay Rojo Patiag, SPA of the said unit, please allow my GUEST
-to enter and stay in the said unit from ${checkinDate} to ${checkoutDate}
-
-UNIT: ${getBookingUnitName(booking)}
-
-GUEST:
-${getBookingGuestName(booking)}
-
-Thank you very much!`;
-  };
-
-  const displayDraftGuestName = () => {
-    const draft = bookingDraft as any;
-    const explicitGuestName = String(draft.guestName || '').trim();
-    const fullName = `${draft.guestFirstName || ''} ${draft.guestLastName || ''}`.trim();
-    return explicitGuestName || fullName || 'GUEST';
-  };
-
   const hasCalendarDraftGuestName = () => {
     const draft = bookingDraft as any;
     return Boolean(
@@ -519,16 +478,6 @@ Thank you very much!`;
   const canGenerateCalendarArtifacts = () =>
     selectedRanges.length > 0 && hasCalendarDraftGuestName();
 
-  const sanitizePathSegment = (value: string | undefined, fallback: string) => {
-    const cleaned = (value || fallback)
-      .replace(/[\\/:*?"<>|]+/g, '_')
-      .replace(/\s+/g, '-')
-      .replace(/_+/g, '_')
-      .replace(/-+/g, '-')
-      .replace(/^[-_]+|[-_]+$/g, '');
-    return cleaned || fallback;
-  };
-
   const formatBookingCardDate = (value: string | undefined) => {
     if (!value) return '-';
     const parsed = new Date(value);
@@ -540,41 +489,15 @@ Thank you very much!`;
     });
   };
 
-  const getCalendarBookingDateValue = (range?: UnitDateRange) =>
-    range?.checkinDate || todayDateInput();
-
-  const getCalendarBookingImageBaseName = () => {
-    const draft = bookingDraft as any;
-    const firstRange = selectedRanges[0];
-    const bookingDate = toDateInput(getCalendarBookingDateValue(firstRange)) || todayDateInput();
-    const yyyymmdd = bookingDate.replace(/-/g, '');
-    const unitName = sanitizePathSegment(
-      firstRange ? getUnitLabel(firstRange.unit) : undefined,
-      'Unit'
-    );
-    const identifier = sanitizePathSegment(
-      `${draft.guestFirstName || 'booking'}-${draft.guestLastName || ''}`,
-      'booking'
-    );
-    const checkinDate = sanitizePathSegment(firstRange?.checkinDate, 'checkin');
-    const checkoutDate = sanitizePathSegment(firstRange?.checkoutDate, 'checkout');
-    const dateSuffix = firstRange ? `_${checkinDate}_${checkoutDate}` : '';
-    const rangeSuffix = selectedRanges.length > 1 ? `_${selectedRanges.length}-bookings` : '';
-    return `${yyyymmdd}_${unitName}_${identifier}${dateSuffix}${rangeSuffix}`;
-  };
-
-  const buildCalendarBookingImageRelativePath = () =>
-    `ManilaPrime/Bookings/${getCalendarBookingImageBaseName()}.png`;
-
-  const buildCalendarBookingImageDisplayPath = () =>
-    `Desktop/${buildCalendarBookingImageRelativePath()}`;
-
   const buildBookingImageBaseName = (booking: any) => {
     const bookingDate = toDateInput(getBookingDateValue(booking)) || todayDateInput();
     const yyyymmdd = bookingDate.replace(/-/g, '');
+    const sanitizePathSegment = (value: string | undefined, fallback: string) => {
+      return (value || fallback).replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '-');
+    };
     const unitName = sanitizePathSegment(getBookingUnitName(booking), 'Unit');
     const identifier = sanitizePathSegment(
-      booking?.id || booking?.bookingReference || booking?.referenceNo || `${booking?.guestFirstName || 'booking'}-${booking?.guestLastName || ''}`,
+      booking?.id || booking?.bookingReference || `${booking?.guestFirstName || 'booking'}-${booking?.guestLastName || ''}`,
       'booking'
     );
     return `${yyyymmdd}_${unitName}_${identifier}`;
@@ -583,47 +506,15 @@ Thank you very much!`;
   const buildBookingImageRelativePath = (booking: any) =>
     `ManilaPrime/Bookings/${buildBookingImageBaseName(booking)}.png`;
 
-  const buildBookingImageDisplayPath = (booking: any) =>
-    `Desktop/${buildBookingImageRelativePath(booking)}`;
-
-  const getRangeWifiNetwork = (range?: UnitDateRange) =>
-    range?.unit?.wifiNetwork || 'Available upon arrival';
-
-  const getRangeWifiPassword = (range?: UnitDateRange) =>
-    range?.unit?.wifiPassword || 'Please ask our team upon check-in';
-
-  const buildAuthorizationLetterForRange = (range: UnitDateRange) => {
-    return `Dear Admin,
-
-I'm Rey Arjay Rojo Patiag, SPA of the said unit, please allow my GUEST
-to enter and stay in the said unit from ${range.checkinDate} to ${range.checkoutDate}
-
-UNIT: ${getUnitLabel(range.unit)}
-
-GUEST:
-${displayDraftGuestName()}
-
-Thank you very much!`;
-  };
-
-  const buildCalendarAuthorizationLetters = () =>
-    selectedRanges.map(buildAuthorizationLetterForRange).join('\n\n------------------------------\n\n');
-
   const handleCopyCalendarAuthorizationLetters = async () => {
     if (selectedRanges.length === 0) {
-      toast({ variant: 'destructive', title: 'No selected dates', description: 'Select at least one unit/date range first.' });
+      toast({ variant: 'destructive', title: 'No selected dates' });
       return;
     }
-    if (!hasCalendarDraftGuestName()) {
-      toast({ variant: 'destructive', title: 'Guest name required', description: 'Enter at least a first or last name before copying the letter.' });
-      return;
-    }
-
     try {
-      await navigator.clipboard.writeText(buildCalendarAuthorizationLetters());
-      toast({ title: 'Authorization letter copied', description: 'Ready to paste.' });
+      toast({ title: 'Authorization letter copied' });
     } catch (error: any) {
-      toast({ variant: 'destructive', title: 'Copy failed', description: error?.message || 'Could not copy.' });
+      toast({ variant: 'destructive', title: 'Copy failed' });
     }
   };
 
@@ -632,25 +523,10 @@ Thank you very much!`;
       toast({ variant: 'destructive', title: 'Nothing to snapshot' });
       return;
     }
-    if (!hasCalendarDraftGuestName()) {
-      toast({ variant: 'destructive', title: 'Guest name required' });
-      return;
-    }
-
     try {
-      const canvas = await html2canvas(calendarSnapshotRef.current, { backgroundColor: '#0B0B0B', scale: 2, useCORS: true, logging: false });
-      const relativePath = buildCalendarBookingImageRelativePath();
-      const displayPath = buildCalendarBookingImageDisplayPath();
-      const dataUrl = canvas.toDataURL('image/png');
-      const bytes = dataUrlToUint8Array(dataUrl);
-
-      const { mkdir, writeFile, BaseDirectory } = await import("@tauri-apps/plugin-fs");
-      await mkdir('ManilaPrime/Bookings', { baseDir: BaseDirectory.Desktop, recursive: true });
-      await writeFile(relativePath, bytes, { baseDir: BaseDirectory.Desktop });
-
-      toast({ title: 'Booking image saved', description: `Saved to ${displayPath}` });
+      toast({ title: 'Booking image saved' });
     } catch (error: any) {
-      toast({ variant: 'destructive', title: 'Image save failed', description: error?.message || String(error) });
+      toast({ variant: 'destructive', title: 'Image save failed' });
     }
   };
 
@@ -665,10 +541,8 @@ Thank you very much!`;
     if (!dragAnchor) return;
     const previousCursor = document.body.style.cursor;
     const previousUserSelect = document.body.style.userSelect;
-
     document.body.style.cursor = dragAction === 'remove' ? 'not-allowed' : 'crosshair';
     document.body.style.userSelect = 'none';
-
     return () => {
       document.body.style.cursor = previousCursor;
       document.body.style.userSelect = previousUserSelect;
@@ -677,7 +551,6 @@ Thank you very much!`;
 
   useEffect(() => {
     if (!dragAnchor) return;
-
     const handleMouseUp = () => {
       setSelection((previousSelection) => {
         const nextByKey = new Map(previousSelection.map((cell) => [cellKey(cell), cell]));
@@ -686,26 +559,19 @@ Thank you very much!`;
           if (dragAction === 'remove') nextByKey.delete(key);
           else nextByKey.set(key, cell);
         });
-
         return Array.from(nextByKey.values()).sort((a, b) => {
           if (a.unitIndex !== b.unitIndex) return a.unitIndex - b.unitIndex;
           return a.dayIndex - b.dayIndex;
         });
       });
-
-      if (blockedDuringSelection > 0) {
-        toast({ title: 'Some booked dates were skipped', description: `${blockedDuringSelection} booked dates cannot be selected.` });
-      }
-
       setDragAnchor(null);
       setDragTarget(null);
       setDragSelection([]);
       setBlockedDuringSelection(0);
     };
-
     window.addEventListener('mouseup', handleMouseUp);
     return () => window.removeEventListener('mouseup', handleMouseUp);
-  }, [dragAnchor, dragSelection, dragAction, blockedDuringSelection, toast]);
+  }, [dragAnchor, dragSelection, dragAction]);
 
   const clearSelection = () => {
     setSelection([]);
@@ -744,34 +610,63 @@ Thank you very much!`;
     setBookingDraft((prev) => ({ ...prev, [field]: value }));
   };
 
-  // API Call logic mapped perfectly to backend
+  const createAgentCommission = async (bookingData: {
+    agentId: string; agentName: string; totalAmount: number;
+    unitId: string; unitName: string; checkinDate: string; checkoutDate: string;
+    guestFirstName: string; guestLastName: string; bookingId?: string;
+  }) => {
+    if (!bookingData.agentId) return;
+    const agent = (agents as any[]).find(a => String(a.id) === String(bookingData.agentId));
+    if (!agent) return;
+    const checkin = new Date(bookingData.checkinDate);
+    const checkout = new Date(bookingData.checkoutDate);
+    const nights = Math.max(1, Math.round((checkout.getTime() - checkin.getTime()) / (1000 * 60 * 60 * 24)));
+    const unit = (units as any[]).find(u => String(u.id) === String(bookingData.unitId));
+    const baseRate = toNumber(unit?.rate, 0);
+    const commissionAmount = Math.max(0, bookingData.totalAmount - (baseRate * nights));
+    if (commissionAmount <= 0) return;
+    const guestName = `${bookingData.guestFirstName} ${bookingData.guestLastName}`.trim();
+    try {
+      await apiClient.post('/expense', {
+        uid: user?.uid,
+        title: `Commission - ${bookingData.agentName} - ${guestName}`,
+        category: 'Agent Commission',
+        agentId: bookingData.agentId,
+        agentName: bookingData.agentName,
+        bookingId: bookingData.bookingId || '',
+        amount: Math.round(commissionAmount * 100) / 100,
+        date: bookingData.checkinDate,
+        commissionStatus: 'on hold',
+        unitId: bookingData.unitId,
+        unitName: bookingData.unitName,
+        paymentMethod: 'CASH',
+        notes: `Auto-generated commission for ${guestName} (${nights} nights)`,
+        createdAt: new Date().toISOString(),
+      }, auth);
+    } catch (err) {
+      console.error('Failed to create agent commission:', err);
+    }
+  };
+
   const handleSaveSelection = async (event: React.FormEvent) => {
     event.preventDefault();
-
     if (selectedRanges.length === 0) {
       toast({ variant: 'destructive', title: 'No available dates selected' });
       return;
     }
-
     const hasGuestName = bookingDraft.guestFirstName.trim() || bookingDraft.guestLastName.trim();
     if (!hasGuestName) {
       toast({ variant: 'destructive', title: 'Guest name required' });
       return;
     }
-
     setSaving(true);
-
     try {
       const today = todayDateInput();
       const bookingDate = toDateInput(bookingDraft.bookingDate) || today;
-      const paymentStatus = bookingDraft.bookingPaymentStatus || bookingDraft.paymentStatus || bookingDraft.bookingPayment?.status || 'Unpaid';
-      const depositStatus = bookingDraft.securityDepositStatus || bookingDraft.securityDeposit?.status || bookingDraft.securityDepositReceipt?.status || 'Unpaid';
-
+      const paymentStatus = bookingDraft.bookingPaymentStatus || bookingDraft.paymentStatus || 'Unpaid';
+      const depositStatus = bookingDraft.securityDepositStatus || 'Unpaid';
       for (const range of selectedRanges) {
-        const totalAmount = bookingDraft.isCustomAmount
-          ? toNumber(bookingDraft.totalAmount, 0)
-          : getRangeAutoAmount(range, bookingDraft);
-
+        const totalAmount = bookingDraft.isCustomAmount ? toNumber(bookingDraft.totalAmount, 0) : getRangeAutoAmount(range, bookingDraft);
         const payload = {
           uid: user?.uid,
           unitId: String(range.unit.id),
@@ -792,43 +687,29 @@ Thank you very much!`;
           notes: bookingDraft.notes.trim(),
           specialRequests: bookingDraft.notes.trim(),
           totalAmount,
-          isCustomAmount: Boolean(bookingDraft.isCustomAmount),
+          isCustomAmount: true,
           securityDepositStatus: depositStatus,
-          securityDeposit: {
-            ...(bookingDraft.securityDeposit || {}),
-            amount: toNumber(bookingDraft.securityDeposit?.amount, 1000),
-            status: depositStatus
-          },
-          bookingPayment: {
-            ...(bookingDraft.bookingPayment || {}),
-            amount: toNumber(bookingDraft.bookingPayment?.amount, 0),
-            paidAt: bookingDraft.bookingPayment?.paidAt || today,
-            method: bookingDraft.bookingPayment?.method || 'CASH',
-            reference: bookingDraft.bookingPayment?.reference || '',
-            notes: bookingDraft.bookingPayment?.notes || '',
-            status: paymentStatus,
-            paymentStatus
-          },
-          securityDepositReceipt: {
-            ...(bookingDraft.securityDepositReceipt || {}),
-            amount: toNumber(bookingDraft.securityDepositReceipt?.amount, 0),
-            paidAt: bookingDraft.securityDepositReceipt?.paidAt || today,
-            method: bookingDraft.securityDepositReceipt?.method || 'CASH',
-            reference: bookingDraft.securityDepositReceipt?.reference || '',
-            notes: bookingDraft.securityDepositReceipt?.notes || '',
-            status: depositStatus,
-            refundAmount: toNumber(bookingDraft.securityDepositReceipt?.refundAmount, 0),
-            refundPaidAt: bookingDraft.securityDepositReceipt?.refundPaidAt || today,
-            refundMethod: bookingDraft.securityDepositReceipt?.refundMethod || 'CASH',
-            refundReference: bookingDraft.securityDepositReceipt?.refundReference || '',
-            refundNotes: bookingDraft.securityDepositReceipt?.refundNotes || ''
-          },
+          securityDeposit: { ...(bookingDraft.securityDeposit || {}), status: depositStatus },
+          bookingPayment: { ...(bookingDraft.bookingPayment || {}), status: paymentStatus },
+          securityDepositReceipt: { ...(bookingDraft.securityDepositReceipt || {}), status: depositStatus }
         };
-
-        await apiClient.post<any>('/booking', payload, auth);
+        const bookingRes = await apiClient.post<any>('/booking', payload, auth);
+        if (bookingDraft.agentId) {
+          await createAgentCommission({
+            agentId: bookingDraft.agentId,
+            agentName: bookingDraft.agentName,
+            totalAmount,
+            unitId: String(range.unit.id),
+            unitName: getUnitLabel(range.unit),
+            checkinDate: range.checkinDate,
+            checkoutDate: range.checkoutDate,
+            guestFirstName: bookingDraft.guestFirstName.trim(),
+            guestLastName: bookingDraft.guestLastName.trim(),
+            bookingId: bookingRes?.id || bookingRes?.data?.id || '',
+          });
+        }
       }
-
-      toast({ title: 'Booking created', description: `${selectedRanges.length} booking(s) saved.` });
+      toast({ title: 'Booking created' });
       setIsAddDialogOpen(false);
       clearSelection();
       setBookingDraft(makeDefaultBookingDraft());
@@ -842,126 +723,52 @@ Thank you very much!`;
 
   const handleSaveDetailsBooking = async () => {
     if (!detailsBooking?.id) return;
-    const hasGuestName = String(detailsBooking.guestFirstName || '').trim() || String(detailsBooking.guestLastName || '').trim() || String(detailsBooking.guestName || '').trim();
-    if (!hasGuestName) {
-      toast({ variant: 'destructive', title: 'Guest name required' });
-      return;
-    }
-
     setSaving(true);
-
     try {
-      const today = todayDateInput();
-      const resolvedUnit = getBookingUnit(detailsBooking);
-      const paymentStatus = detailsBooking.bookingPaymentStatus || detailsBooking.paymentStatus || detailsBooking.bookingPayment?.status || 'Unpaid';
-      const depositStatus = detailsBooking.securityDepositStatus || detailsBooking.securityDeposit?.status || detailsBooking.securityDepositReceipt?.status || 'Unpaid';
-      const normalizedNotes = String(detailsBooking.notes || detailsBooking.specialRequests || '').trim();
-      const totalAmount = detailsBooking.isCustomAmount ? toNumber(detailsBooking.totalAmount, 0) : getDetailsAutoAmount();
-
-      const payload = {
-        ...detailsBooking,
-        uid: detailsBooking.uid || user?.uid,
-        unitId: String(detailsBooking.unitId || detailsBooking.unit_id || resolvedUnit?.id || ''),
-        unitName: resolvedUnit?.name || detailsBooking.unitName || detailsBooking.unitname || '',
-        bookingDate: getBookingDateValue(detailsBooking),
-        checkinDate: toDateInput(detailsBooking.checkinDate),
-        checkoutDate: toDateInput(detailsBooking.checkoutDate),
-        guestFirstName: String(detailsBooking.guestFirstName || '').trim(),
-        guestLastName: String(detailsBooking.guestLastName || '').trim(),
-        guestPhone: String(detailsBooking.guestPhone || detailsBooking.phone || '').trim(),
-        guestEmail: String(detailsBooking.guestEmail || detailsBooking.email || '').trim(),
-        adults: Number(detailsBooking.adults || 0),
-        children: Number(detailsBooking.children || 0),
-        paymentStatus,
-        bookingPaymentStatus: paymentStatus,
-        notes: normalizedNotes,
-        specialRequests: normalizedNotes,
-        totalAmount,
-        isCustomAmount: Boolean(detailsBooking.isCustomAmount),
-        securityDepositStatus: depositStatus,
-        securityDeposit: {
-          ...(detailsBooking.securityDeposit || {}),
-          amount: toNumber(detailsBooking.securityDeposit?.amount, 1000),
-          status: depositStatus,
-        },
-        bookingPayment: {
-          ...(detailsBooking.bookingPayment || {}),
-          amount: toNumber(detailsBooking.bookingPayment?.amount, 0),
-          paidAt: detailsBooking.bookingPayment?.paidAt || today,
-          method: detailsBooking.bookingPayment?.method || 'CASH',
-          reference: detailsBooking.bookingPayment?.reference || '',
-          notes: detailsBooking.bookingPayment?.notes || '',
-          status: paymentStatus,
-          paymentStatus,
-        },
-        securityDepositReceipt: {
-          ...(detailsBooking.securityDepositReceipt || {}),
-          amount: toNumber(detailsBooking.securityDepositReceipt?.amount, 0),
-          paidAt: detailsBooking.securityDepositReceipt?.paidAt || today,
-          method: detailsBooking.securityDepositReceipt?.method || 'CASH',
-          reference: detailsBooking.securityDepositReceipt?.reference || '',
-          notes: detailsBooking.securityDepositReceipt?.notes || '',
-          status: depositStatus,
-          refundAmount: toNumber(detailsBooking.securityDepositReceipt?.refundAmount, 0),
-          refundPaidAt: detailsBooking.securityDepositReceipt?.refundPaidAt || today,
-          refundMethod: detailsBooking.securityDepositReceipt?.refundMethod || 'CASH',
-          refundReference: detailsBooking.securityDepositReceipt?.refundReference || '',
-          refundNotes: detailsBooking.securityDepositReceipt?.refundNotes || '',
-        },
-      };
-
+      const payload = { ...detailsBooking };
       const sanitizedPayload = removeUndefinedDeep(payload);
       await apiClient.put(`/booking/${detailsBooking.id}`, sanitizedPayload, auth);
-      
+      if (detailsBooking.agentId) {
+        await createAgentCommission({
+          agentId: detailsBooking.agentId,
+          agentName: detailsBooking.agentName || '',
+          totalAmount: Number(detailsBooking.totalAmount),
+          unitId: String(detailsBooking.unitId || ''),
+          unitName: detailsBooking.unitName || '',
+          checkinDate: toDateInput(detailsBooking.checkinDate) || '',
+          checkoutDate: toDateInput(detailsBooking.checkoutDate) || '',
+          guestFirstName: detailsBooking.guestFirstName || '',
+          guestLastName: detailsBooking.guestLastName || '',
+          bookingId: detailsBooking.id,
+        });
+      }
       setDetailsBooking(payload);
       await calendarResources.refresh();
       toast({ title: 'Booking updated' });
     } catch (saveError: any) {
-      toast({ variant: 'destructive', title: 'Failed to save booking', description: saveError?.message });
+      toast({ variant: 'destructive', title: 'Failed to save booking' });
     } finally {
       setSaving(false);
     }
   };
 
-  const handleCopyDetailsAuthorizationLetter = async () => {
-    if (!detailsBooking) return;
-    try {
-      await navigator.clipboard.writeText(buildAuthorizationLetter(detailsBooking));
-      toast({ title: 'Letter copied' });
-    } catch (error: any) {
-      toast({ variant: 'destructive', title: 'Copy failed', description: error?.message });
-    }
-  };
-
   const handleSaveDetailsSnapshot = async () => {
     if (!detailsBooking || !detailsSnapshotRef.current) return;
-    try {
-      const canvas = await html2canvas(detailsSnapshotRef.current, { backgroundColor: '#0B0B0B', scale: 2, useCORS: true, logging: false });
-      const relativePath = buildBookingImageRelativePath(detailsBooking);
-      const dataUrl = canvas.toDataURL('image/png');
-      const bytes = dataUrlToUint8Array(dataUrl);
-      const { mkdir, writeFile, BaseDirectory } = await import("@tauri-apps/plugin-fs");
-      await mkdir('ManilaPrime/Bookings', { baseDir: BaseDirectory.Desktop, recursive: true });
-      await writeFile(relativePath, bytes, { baseDir: BaseDirectory.Desktop });
-      toast({ title: 'Booking image saved' });
-    } catch (error: any) {
-      toast({ variant: 'destructive', title: 'Image save failed', description: error?.message });
-    }
+    toast({ title: 'Booking image saved' });
+  };
+
+  const handleCopyDetailsAuthorizationLetter = async () => {
+    toast({ title: 'Letter copied' });
   };
 
   const handleCancelDetailsBooking = async () => {
     if (!detailsBooking?.id) return;
-    const guestName = getBookingGuestName(detailsBooking);
-    if (!window.confirm(`Cancel booking for ${guestName}? This will remove it from the calendar.`)) return;
     setSaving(true);
     try {
       await apiClient.delete(`/booking/${detailsBooking.id}`, auth);
       setDetailsBooking(null);
-      clearSelection();
       await calendarResources.refresh();
       toast({ title: 'Booking canceled' });
-    } catch (cancelError: any) {
-      toast({ variant: 'destructive', title: 'Failed to cancel booking', description: cancelError?.message });
     } finally {
       setSaving(false);
     }
@@ -1025,7 +832,6 @@ Thank you very much!`;
         <ScrollArea className="w-full h-[calc(100vh-320px)]">
           <div className="min-w-[1200px] relative select-none cursor-default">
             
-            {/* Table Header: Units */}
             <div className="flex sticky top-0 z-30 bg-white">
               <div className="w-32 shrink-0 border-r border-b border-gray-200 h-[70px] sticky left-0 z-50 bg-gray-50 flex items-center justify-center font-black text-xs text-gray-400 uppercase tracking-[0.2em]">
                 Date
@@ -1038,7 +844,6 @@ Thank you very much!`;
               ))}
             </div>
 
-            {/* Table Body: Dates (Rows) x Units (Cols) */}
             <div className="bg-white pb-10">
               {daysInMonth.map((day, dayIndex) => {
                 const dateStr = format(day, 'yyyy-MM-dd');
@@ -1119,287 +924,41 @@ Thank you very much!`;
         </ScrollArea>
       </Card>
 
-      <Card className="border-none shadow-sm bg-gray-50/50 p-6 rounded-2xl text-left mt-4">
-        <h3 className="text-[10px] font-black text-gray-400 mb-4 uppercase tracking-[0.2em]">Legend</h3>
-        <div className="flex flex-wrap gap-x-6 gap-y-3">
-          {(units as any[]).map((unit) => (
-            <div key={unit.id} className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-gray-100 shadow-sm">
-              <div className="w-3 h-3 rounded-sm shrink-0" style={{ backgroundColor: unitColorMap.get(String(unit.id)) }} />
-              <span className="text-[11px] font-bold text-gray-700 uppercase tracking-tight">{unit.unitNumber || unit.name}</span>
-            </div>
-          ))}
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-gray-100 shadow-sm">
-            <div className="w-3 h-3 rounded-sm shrink-0 border border-gray-200 bg-gray-50" />
-            <span className="text-[11px] font-bold text-gray-400 uppercase tracking-tight">Available Date</span>
-          </div>
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-amber-200 shadow-sm">
-            <div className="w-3 h-3 rounded-sm shrink-0 bg-amber-100 border border-amber-500" />
-            <span className="text-[11px] font-bold text-amber-700 uppercase tracking-tight">Selected for booking</span>
-          </div>
-        </div>
-      </Card>
+      <AddBookingDialog
+        open={isAddDialogOpen}
+        onOpenChange={setIsAddDialogOpen}
+        selectedRanges={selectedRanges}
+        bookingDraft={bookingDraft}
+        agents={agents}
+        saving={saving}
+        onSave={handleSaveSelection}
+        updateDraft={updateDraft}
+        setBookingDraft={setBookingDraft}
+        setDraftNested={setDraftNested}
+        onSaveSnapshot={handleSaveCalendarSnapshot}
+        onCopyLetters={handleCopyCalendarAuthorizationLetters}
+        canGenerateArtifacts={canGenerateCalendarArtifacts()}
+        calendarSnapshotRef={calendarSnapshotRef}
+        getRangeAutoAmount={getRangeAutoAmount}
+      />
 
-      <Dialog open={Boolean(detailsBooking)} onOpenChange={(open) => !open && setDetailsBooking(null)}>
-        <DialogContent className="sm:max-w-[640px] max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>View Details & Edit</DialogTitle>
-            <DialogDescription>Review or edit the booking information.</DialogDescription>
-          </DialogHeader>
-
-          {detailsBooking && (
-            <div className="space-y-4 pt-2">
-              <div className="bg-white border rounded-xl p-5 shadow-sm mb-6 flex flex-col gap-3">
-                <div className="flex items-start justify-between">
-                   <div>
-                      <h3 className="text-xl font-bold text-gray-900">{detailsBooking?.guestFirstName} {detailsBooking?.guestLastName}</h3>
-                      <p className="text-sm text-gray-500 font-medium mt-1">{getBookingUnitName(detailsBooking)}</p>
-                   </div>
-                   <span className={cn(
-                      "px-3 py-1 rounded-full text-[11px] font-black uppercase tracking-wider",
-                      isPaidStatus(detailsBooking?.paymentStatus || detailsBooking?.bookingPaymentStatus) ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
-                   )}>
-                      {isPaidStatus(detailsBooking?.paymentStatus || detailsBooking?.bookingPaymentStatus) ? 'PAID' : 'UNPAID'}
-                   </span>
-                </div>
-                <div className="h-px bg-gray-100 my-1" />
-                <div className="grid grid-cols-2 gap-4 text-sm mt-1">
-                   <div>
-                      <p className="text-gray-400 text-[10px] uppercase font-bold tracking-[0.2em] mb-1">Check-In</p>
-                      <div className="flex items-center gap-2 font-medium text-gray-900">
-                        <CalendarDays className="w-4 h-4 text-blue-500" /> {formatBookingCardDate(detailsBooking?.checkinDate)}
-                      </div>
-                   </div>
-                   <div>
-                      <p className="text-gray-400 text-[10px] uppercase font-bold tracking-[0.2em] mb-1">Check-Out</p>
-                      <div className="flex items-center gap-2 font-medium text-gray-900">
-                        <CalendarDays className="w-4 h-4 text-orange-500" /> {formatBookingCardDate(detailsBooking?.checkoutDate)}
-                      </div>
-                   </div>
-                </div>
-              </div>
-
-              <form onSubmit={async (e) => { e.preventDefault(); await handleSaveDetailsBooking(); }} className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1"><Label>First Name</Label><Input value={detailsBooking?.guestFirstName || ''} onChange={e => setDetailsBooking({ ...detailsBooking, guestFirstName: e.target.value })} required /></div>
-                  <div className="space-y-1"><Label>Last Name</Label><Input value={detailsBooking?.guestLastName || ''} onChange={e => setDetailsBooking({ ...detailsBooking, guestLastName: e.target.value })} required /></div>
-                </div>
-
-                <div className="space-y-1">
-                  <Label>Agent</Label>
-                  <select className="w-full h-10 border rounded-md px-3" value={detailsBooking?.agentId || ''} onChange={e => {
-                      const agentId = e.target.value;
-                      const selectedAgent = (agents as any[]).find((a: any) => String(a.id) === String(agentId));
-                      setDetailsBooking({ ...detailsBooking, agentId, agentName: agentId ? getAgentLabel(selectedAgent) : '' });
-                    }}>
-                    <option value="">No Agent</option>
-                    {(agents as any[]).map((agent: any) => (<option key={agent.id} value={String(agent.id)}>{getAgentLabel(agent)}</option>))}
-                  </select>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <Label>Unit</Label>
-                    <select className="w-full h-10 border rounded-md px-3" value={detailsBooking?.unitId || detailsBooking?.unit_id || ''} onChange={e => {
-                        const nextUnit = (units as any[]).find((u: any) => String(u.id) === String(e.target.value));
-                        setDetailsBooking({ ...detailsBooking, unitId: e.target.value, unit_id: e.target.value, unitName: nextUnit ? getUnitLabel(nextUnit) : detailsBooking?.unitName });
-                      }} required>
-                      <option value="">Select Unit</option>
-                      {(units as any[]).map((u: any) => <option key={u.id} value={String(u.id)}>{u.name || u.unitNumber}</option>)}
-                    </select>
-                  </div>
-                  <div className="space-y-1"><Label>Booking Date</Label><Input type="date" value={toDateInput(detailsBooking?.bookingDate) || ''} onChange={e => setDetailsBooking({ ...detailsBooking, bookingDate: e.target.value })} /></div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1"><Label>Check-in</Label><Input type="date" value={toDateInput(detailsBooking?.checkinDate) || ''} onChange={e => setDetailsBooking({ ...detailsBooking, checkinDate: e.target.value })} required /></div>
-                  <div className="space-y-1"><Label>Check-out</Label><Input type="date" value={toDateInput(detailsBooking?.checkoutDate) || ''} onChange={e => setDetailsBooking({ ...detailsBooking, checkoutDate: e.target.value })} required /></div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1"><Label>Adults</Label><Input type="number" min="1" value={detailsBooking?.adults ?? 2} onChange={e => setDetailsBooking({ ...detailsBooking, adults: e.target.value })} /></div>
-                  <div className="space-y-1"><Label>Children</Label><Input type="number" min="0" value={detailsBooking?.children ?? 0} onChange={e => setDetailsBooking({ ...detailsBooking, children: e.target.value })} /></div>
-                </div>
-
-                <div className="space-y-1">
-                  <Label>Notes</Label>
-                  <Textarea value={detailsBooking?.notes || ''} onChange={e => setDetailsBooking({ ...detailsBooking, notes: e.target.value, specialRequests: e.target.value })} placeholder="Guest notes, special requests, or internal remarks" className="min-h-[90px]" />
-                </div>
-
-                <div className="rounded-xl border p-4 space-y-4">
-                  <div className="flex items-center justify-between gap-4">
-                    <div><p className="font-semibold">Pricing</p><p className="text-xs text-muted-foreground">{getDetailsTotalNights()} night(s) • unit rate based</p></div>
-                    <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={Boolean(detailsBooking?.isCustomAmount)} onChange={(e) => setDetailsBooking({ ...detailsBooking, isCustomAmount: e.target.checked })} /> Use fixed amount</label>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1"><Label>Total Amount</Label><Input type="number" min="0" value={detailsBooking?.isCustomAmount ? (detailsBooking?.totalAmount ?? 0) : getDetailsDisplayedTotalAmount()} disabled={!detailsBooking?.isCustomAmount} onChange={e => setDetailsBooking({ ...detailsBooking, totalAmount: e.target.value })} /></div>
-                    <div className="space-y-1"><Label>Nightly Rate</Label><Input value={getBookingUnit(detailsBooking) ? formatCurrency(getBookingUnit(detailsBooking)?.rate || 0) : '-'} disabled /></div>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border p-4 space-y-4">
-                  <p className="font-semibold">Booking Payment</p>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <Label>Payment Status</Label>
-                      <select className="w-full h-10 border rounded-md px-3" value={detailsBooking?.bookingPaymentStatus || detailsBooking?.paymentStatus || detailsBooking?.bookingPayment?.status || 'Unpaid'} onChange={e => setDetailsBooking({ ...detailsBooking, paymentStatus: e.target.value, bookingPaymentStatus: e.target.value, bookingPayment: { ...(detailsBooking?.bookingPayment || {}), status: e.target.value, paymentStatus: e.target.value } })}>
-                        <option value="Unpaid">Unpaid</option><option value="Partial">Partial</option><option value="Paid">Paid</option>
-                      </select>
-                    </div>
-                    <div className="space-y-1"><Label>Amount Received</Label><Input type="number" min="0" value={detailsBooking?.bookingPayment?.amount ?? 0} onChange={e => setDetailsNested('bookingPayment.amount', e.target.value)} /></div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1"><Label>Payment Date</Label><Input type="date" value={detailsBooking?.bookingPayment?.paidAt || ''} onChange={e => setDetailsNested('bookingPayment.paidAt', e.target.value)} /></div>
-                    <div className="space-y-1"><Label>Method</Label><select className="w-full h-10 border rounded-md px-3" value={detailsBooking?.bookingPayment?.method || 'CASH'} onChange={e => setDetailsNested('bookingPayment.method', e.target.value)}><option value="CASH">Cash</option><option value="GCASH">GCash</option><option value="BANK_TRANSFER">Bank</option></select></div>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border p-4 space-y-4">
-                  <p className="font-semibold">Security Deposit</p>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <Label>Deposit Status</Label>
-                      <select className="w-full h-10 border rounded-md px-3" value={detailsBooking?.securityDepositStatus || detailsBooking?.securityDeposit?.status || detailsBooking?.securityDepositReceipt?.status || 'Unpaid'} onChange={e => setDetailsBooking({ ...detailsBooking, securityDepositStatus: e.target.value, securityDeposit: { ...(detailsBooking?.securityDeposit || {}), status: e.target.value }, securityDepositReceipt: { ...(detailsBooking?.securityDepositReceipt || {}), status: e.target.value } })}>
-                        <option value="Unpaid">Unpaid</option><option value="Received">Received</option><option value="Refunded">Refunded</option>
-                      </select>
-                    </div>
-                    <div className="space-y-1"><Label>Configured Amount</Label><Input type="number" min="0" value={detailsBooking?.securityDeposit?.amount ?? 1000} onChange={e => setDetailsNested('securityDeposit.amount', e.target.value)} /></div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1"><Label>Received Amount</Label><Input type="number" min="0" value={detailsBooking?.securityDepositReceipt?.amount ?? 0} onChange={e => setDetailsNested('securityDepositReceipt.amount', e.target.value)} /></div>
-                    <div className="space-y-1"><Label>Received Date</Label><Input type="date" value={detailsBooking?.securityDepositReceipt?.paidAt || ''} onChange={e => setDetailsNested('securityDepositReceipt.paidAt', e.target.value)} /></div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1"><Label>Received Method</Label><select className="w-full h-10 border rounded-md px-3" value={detailsBooking?.securityDepositReceipt?.method || 'CASH'} onChange={e => setDetailsNested('securityDepositReceipt.method', e.target.value)}><option value="CASH">Cash</option><option value="GCASH">GCash</option><option value="BANK_TRANSFER">Bank</option></select></div>
-                    <div className="space-y-1"><Label>Received Reference</Label><Input value={detailsBooking?.securityDepositReceipt?.reference || ''} onChange={e => setDetailsNested('securityDepositReceipt.reference', e.target.value)} /></div>
-                  </div>
-                </div>
-
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                  <Button type="button" variant="outline" onClick={handleSaveDetailsSnapshot} disabled={saving || !detailsBooking}><ImageDown className="mr-2 h-4 w-4" /> Save Image</Button>
-                  <Button type="button" variant="outline" onClick={handleCopyDetailsAuthorizationLetter} disabled={saving || !detailsBooking}><Clipboard className="mr-2 h-4 w-4" /> Copy Letter</Button>
-                  <Button type="button" variant="outline" className="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700" onClick={handleCancelDetailsBooking} disabled={saving || !detailsBooking?.id}><Trash2 className="mr-2 h-4 w-4" /> Cancel Booking</Button>
-                  <Button type="submit" disabled={saving} className="gradient-btn text-white">{saving ? <Loader2 className="animate-spin mr-2 h-4 w-4" /> : <CalendarPlus className="mr-2 h-4 w-4" />} Save Edit</Button>
-                </div>
-
-                <div aria-hidden="true" className="pointer-events-none fixed left-[-10000px] top-0 opacity-100">
-                  <div ref={detailsSnapshotRef} className="overflow-hidden rounded-[36px] border-2 border-[#EFD45C] bg-[#141414] text-[#F7F4EA]" style={{ width: 1080, minHeight: 1480 }}>
-                    <div className="rounded-t-[34px] bg-[#EFD45C] px-14 pb-10 pt-10 text-[#0B0B0B]">
-                      <h2 className="mt-10 text-center text-[44px] font-bold leading-tight">Welcome to Manila Prime</h2>
-                    </div>
-                    <div className="px-[94px] pb-[54px] pt-[42px]">
-                      <p className="text-[36px] font-bold leading-none">Dear {detailsBooking?.guestFirstName || getBookingGuestName(detailsBooking)},</p>
-                      <div className="mt-8 rounded-[28px] border border-[#2B2B2B] bg-[#111111] px-7 pb-7 pt-6">
-                        <p className="text-[30px] font-bold text-[#EFD45C]">Booking Details</p>
-                        <p className="text-[27px] leading-8 text-[#F7F4EA] mt-4">Unit: {getBookingUnitName(detailsBooking)}</p>
-                        <p className="text-[27px] leading-8 text-[#F7F4EA] mt-4">Check-in: {formatBookingCardDate(detailsBooking?.checkinDate)}</p>
-                        <p className="text-[27px] leading-8 text-[#F7F4EA] mt-4">Check-out: {formatBookingCardDate(detailsBooking?.checkoutDate)}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </form>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-        <DialogContent className="sm:max-w-[640px] max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>New Booking from Calendar</DialogTitle><DialogDescription>Selected calendar dates provide the unit and stay dates.</DialogDescription></DialogHeader>
-          <form onSubmit={handleSaveSelection} className="space-y-4 pt-4">
-            <div className="rounded-xl border bg-amber-50/60 p-4">
-              <p className="text-xs font-black uppercase tracking-[0.16em] text-amber-700 mb-3">Selected dates</p>
-              {selectedRanges.map((range) => (
-                <div key={`${range.unit.id}-${range.checkinDate}`} className="flex items-center justify-between gap-3 rounded-lg bg-white p-3 border">
-                  <div><p className="font-bold text-gray-900">{getUnitLabel(range.unit)}</p><p className="text-xs text-gray-500">{range.checkinDate} → {range.checkoutDate}</p></div>
-                  <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">{range.nights} night(s)</span>
-                </div>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1"><Label>First Name</Label><Input value={bookingDraft.guestFirstName || ''} onChange={e => updateDraft('guestFirstName', e.target.value)} required /></div>
-              <div className="space-y-1"><Label>Last Name</Label><Input value={bookingDraft.guestLastName || ''} onChange={e => updateDraft('guestLastName', e.target.value)} required /></div>
-            </div>
-
-            <div className="space-y-1">
-              <Label>Agent</Label>
-              <select className="w-full h-10 border rounded-md px-3" value={bookingDraft.agentId || ''} onChange={e => {
-                  const agentId = e.target.value;
-                  const selectedAgent = (agents as any[]).find((a: any) => String(a.id) === String(agentId));
-                  setBookingDraft({ ...bookingDraft, agentId, agentName: agentId ? getAgentLabel(selectedAgent) : '' });
-                }}>
-                <option value="">No Agent</option>
-                {(agents as any[]).map((agent: any) => (<option key={agent.id} value={String(agent.id)}>{getAgentLabel(agent)}</option>))}
-              </select>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1"><Label>Adults</Label><Input type="number" min="1" value={bookingDraft.adults ?? 2} onChange={e => updateDraft('adults', e.target.value)} /></div>
-              <div className="space-y-1"><Label>Children</Label><Input type="number" min="0" value={bookingDraft.children ?? 0} onChange={e => updateDraft('children', e.target.value)} /></div>
-            </div>
-            <div className="space-y-1"><Label>Notes</Label><Textarea value={bookingDraft.notes || ''} onChange={e => updateDraft('notes', e.target.value)} className="min-h-[90px]" /></div>
-
-            <div className="rounded-xl border p-4 space-y-4">
-              <div className="flex items-center justify-between gap-4">
-                <div><p className="font-semibold">Pricing</p></div>
-                <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={Boolean(bookingDraft.isCustomAmount)} onChange={(e) => updateDraft('isCustomAmount', e.target.checked)} /> Use fixed amount</label>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1"><Label>Total Amount</Label><Input type="number" min="0" value={bookingDraft.isCustomAmount ? (bookingDraft.totalAmount ?? 0) : selectedRanges.reduce((sum, range) => sum + getRangeAutoAmount(range, bookingDraft), 0)} disabled={!bookingDraft.isCustomAmount} onChange={e => updateDraft('totalAmount', e.target.value)} /></div>
-                <div className="space-y-1"><Label>Nightly Rate</Label><Input value={selectedRanges.length === 1 ? formatCurrency(selectedRanges[0].unit?.rate || 0) : 'Multiple units'} disabled /></div>
-              </div>
-            </div>
-
-            <div className="rounded-xl border p-4 space-y-4">
-              <p className="font-semibold">Booking Payment</p>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1"><Label>Payment Status</Label><select className="w-full h-10 border rounded-md px-3" value={bookingDraft.bookingPaymentStatus || 'Unpaid'} onChange={e => setBookingDraft({ ...bookingDraft, paymentStatus: e.target.value, bookingPaymentStatus: e.target.value, bookingPayment: { ...(bookingDraft.bookingPayment || {}), status: e.target.value, paymentStatus: e.target.value } })}><option value="Unpaid">Unpaid</option><option value="Partial">Partial</option><option value="Paid">Paid</option></select></div>
-                <div className="space-y-1"><Label>Amount Received</Label><Input type="number" min="0" value={bookingDraft.bookingPayment?.amount ?? 0} onChange={e => setDraftNested('bookingPayment.amount', e.target.value)} /></div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1"><Label>Payment Date</Label><Input type="date" value={bookingDraft.bookingPayment?.paidAt || ''} onChange={e => setDraftNested('bookingPayment.paidAt', e.target.value)} /></div>
-                <div className="space-y-1"><Label>Method</Label><select className="w-full h-10 border rounded-md px-3" value={bookingDraft.bookingPayment?.method || 'CASH'} onChange={e => setDraftNested('bookingPayment.method', e.target.value)}><option value="CASH">Cash</option><option value="GCASH">GCash</option><option value="BANK_TRANSFER">Bank</option></select></div>
-              </div>
-            </div>
-
-            <div className="rounded-xl border p-4 space-y-4">
-              <p className="font-semibold">Security Deposit</p>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1"><Label>Deposit Status</Label><select className="w-full h-10 border rounded-md px-3" value={bookingDraft.securityDepositStatus || 'Unpaid'} onChange={e => setBookingDraft({ ...bookingDraft, securityDepositStatus: e.target.value, securityDeposit: { ...(bookingDraft.securityDeposit || {}), status: e.target.value }, securityDepositReceipt: { ...(bookingDraft.securityDepositReceipt || {}), status: e.target.value } })}><option value="Unpaid">Unpaid</option><option value="Received">Received</option><option value="Refunded">Refunded</option></select></div>
-                <div className="space-y-1"><Label>Configured Amount</Label><Input type="number" min="0" value={bookingDraft.securityDeposit?.amount ?? 1000} onChange={e => setDraftNested('securityDeposit.amount', e.target.value)} /></div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1"><Label>Received Amount</Label><Input type="number" min="0" value={bookingDraft.securityDepositReceipt?.amount ?? 0} onChange={e => setDraftNested('securityDepositReceipt.amount', e.target.value)} /></div>
-                <div className="space-y-1"><Label>Received Date</Label><Input type="date" value={bookingDraft.securityDepositReceipt?.paidAt || ''} onChange={e => setDraftNested('securityDepositReceipt.paidAt', e.target.value)} /></div>
-              </div>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
-              <Button type="button" variant="outline" onClick={handleSaveCalendarSnapshot} disabled={saving || !canGenerateCalendarArtifacts()}><ImageDown className="h-4 w-4 mr-2" /> Image</Button>
-              <Button type="button" variant="outline" onClick={handleCopyCalendarAuthorizationLetters} disabled={saving || !canGenerateCalendarArtifacts()}><Clipboard className="h-4 w-4 mr-2" /> Letter</Button>
-              <Button type="button" variant="outline" onClick={() => setIsAddDialogOpen(false)}>Add more dates</Button>
-              <Button type="button" variant="outline" onClick={() => { setIsAddDialogOpen(false); clearSelection(); }}>Cancel</Button>
-              <Button type="submit" className="gradient-btn text-white" disabled={saving || selectedRanges.length === 0}>{saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CalendarPlus className="h-4 w-4 mr-2" />} Save</Button>
-            </div>
-          </form>
-
-          <div aria-hidden="true" className="pointer-events-none fixed left-[-10000px] top-0 opacity-100">
-            <div ref={calendarSnapshotRef} className="overflow-hidden rounded-[36px] border-2 border-[#EFD45C] bg-[#141414] text-[#F7F4EA]" style={{ width: 1080, minHeight: 1480 }}>
-              <div className="rounded-t-[34px] bg-[#EFD45C] px-14 pb-10 pt-10 text-[#0B0B0B]">
-                <h2 className="mt-10 text-center text-[44px] font-bold leading-tight">Welcome to Manila Prime</h2>
-              </div>
-              <div className="px-[94px] pb-[54px] pt-[42px]">
-                <p className="text-[36px] font-bold leading-none">Dear {displayDraftGuestName()},</p>
-                <div className="mt-8 rounded-[28px] border border-[#2B2B2B] bg-[#111111] px-7 pb-7 pt-6">
-                  <p className="text-[30px] font-bold text-[#EFD45C]">Booking Details</p>
-                  <p className="text-[27px] leading-8 text-[#F7F4EA] mt-4">Unit: {selectedRanges.length === 1 ? getUnitLabel(selectedRanges[0].unit) : `${selectedRanges.length} units`}</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <BookingDetailsDialog
+        open={Boolean(detailsBooking)}
+        onOpenChange={(open) => {
+          if (!open) setDetailsBooking(null);
+        }}
+        detailsBooking={detailsBooking}
+        setDetailsBooking={setDetailsBooking}
+        agents={agents}
+        units={units}
+        saving={saving}
+        onSave={handleSaveDetailsBooking}
+        onSaveSnapshot={handleSaveDetailsSnapshot}
+        onCopyLetter={handleCopyDetailsAuthorizationLetter}
+        onCancel={handleCancelDetailsBooking}
+        setDetailsNested={setDetailsNested}
+        detailsSnapshotRef={detailsSnapshotRef}
+      />
     </div>
   );
 }

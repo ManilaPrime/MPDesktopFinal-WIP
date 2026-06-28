@@ -1,15 +1,18 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useUser, useAuth } from '@/firebase';
 import { apiClient } from '@/lib/api-client';
 import { useAppResources } from '@/lib/app-data-store';
+import { useDateStore } from '@/lib/date-store';
+import { formatCurrency } from '@/lib/utils-app';
+import { cn } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Handshake, Loader2, Plus, Mail, Percent, Edit2, Trash2, Save, Phone, Calendar, Info } from 'lucide-react';
+import { Handshake, Loader2, Plus, Mail, Percent, Edit2, Trash2, Save, Phone, Calendar, Info, DollarSign, Check } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -25,38 +28,56 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from '@/hooks/use-toast';
+import { useDialogCleanup } from '@/hooks/use-dialog-cleanup';
 
 export default function AgentsClient() {
   const { user } = useUser();
   const auth = useAuth();
   const { toast } = useToast();
+  const { month, year } = useDateStore();
   
-  const agentsResources = useAppResources(['agents']);
+  const agentsResources = useAppResources(['agents', 'expenses']);
   const agents = agentsResources.data['agents'] ?? [];
+  const expenses = agentsResources.data['expenses'] ?? [];
   const loading = agentsResources.loading;
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<any>(null);
   const [formLoading, setFormLoading] = useState(false);
 
+  const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
 
-useEffect(() => {
-  if (isDialogOpen) return;
+  // Commission data grouped by agentId
+  const commissionsByAgent = useMemo(() => {
+    const map: Record<string, any[]> = {};
+    expenses
+      .filter(e => e.category === 'Agent Commission')
+      .forEach(e => {
+        const aid = String(e.agentId || '');
+        if (!map[aid]) map[aid] = [];
+        map[aid].push(e);
+      });
+    return map;
+  }, [expenses]);
 
-  const cleanupDocumentInteractivity = () => {
-    document.body.style.pointerEvents = '';
-    document.body.removeAttribute('data-scroll-locked');
+  // Monthly commission data for the currently editing agent
+  const editingAgentCommissions = useMemo(() => {
+    if (!editingAgent?.id) return [];
+    return (commissionsByAgent[String(editingAgent.id)] || [])
+      .filter(c => c.date?.startsWith(monthKey))
+      .sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
+  }, [editingAgent?.id, commissionsByAgent, monthKey]);
+
+  const getAgentCommissionSummary = (agentId: string) => {
+    const commissions = commissionsByAgent[agentId] || [];
+    const monthlyCommissions = commissions.filter(c => c.date?.startsWith(monthKey));
+    const onHold = monthlyCommissions.filter(c => c.commissionStatus !== 'released').reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const released = monthlyCommissions.filter(c => c.commissionStatus === 'released').reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    return { onHold, released, total: onHold + released, count: monthlyCommissions.length };
   };
 
-  cleanupDocumentInteractivity();
-  const timeoutId = window.setTimeout(cleanupDocumentInteractivity, 0);
-  const frameId = window.requestAnimationFrame(cleanupDocumentInteractivity);
 
-  return () => {
-    window.clearTimeout(timeoutId);
-    window.cancelAnimationFrame(frameId);
-  };
-}, [isDialogOpen]);
+  useDialogCleanup(isDialogOpen);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -94,12 +115,27 @@ useEffect(() => {
     }
   };
 
+  const handleReleaseCommission = async (commission: any) => {
+    if (!confirm(`Release commission of ${formatCurrency(commission.amount)} to ${commission.agentName}?`)) return;
+    try {
+      await apiClient.put(`/expense/${commission.id}`, {
+        ...commission,
+        commissionStatus: 'released',
+        updatedAt: new Date().toISOString(),
+      }, auth);
+      toast({ title: 'Released', description: 'Commission has been marked as released.' });
+      await agentsResources.refresh();
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error', description: error.message });
+    }
+  };
+
   const openNewAgentDialog = () => {
     setEditingAgent({
       name: '',
       email: '',
       phone: '',
-      commissionType: 'percentage',
+      commissionType: 'fixed_commission',
       commissionRate: 0,
       joinDate: new Date().toISOString().split('T')[0]
     });
@@ -109,8 +145,8 @@ useEffect(() => {
   const openEditAgentDialog = (agent: any) => {
     setEditingAgent({
       ...agent,
-      commissionType: agent.commissionType || 'percentage',
-      commissionRate: agent.commissionRate || 0
+      commissionType: 'fixed_commission',
+      commissionRate: 0
     });
     setIsDialogOpen(true);
   };
@@ -155,14 +191,31 @@ useEffect(() => {
             <CardContent className="p-4 space-y-4">
               <div className="flex items-center justify-between border-b pb-4 border-gray-100">
                 <div className="flex items-center gap-2 text-sm text-gray-600 font-medium">
-                  <Percent className="h-4 w-4 text-amber-500" /> Commission
+                  <Handshake className="h-4 w-4 text-amber-500" /> Commission Model
                 </div>
                 <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 font-bold">
-                  {agent.commissionType === 'fixed_commission' 
-                    ? 'Fixed / Surplus' 
-                    : `${agent.commissionRate || 0}%`}
+                  Fixed / Surplus
                 </Badge>
               </div>
+              {(() => {
+                const summary = getAgentCommissionSummary(String(agent.id));
+                return summary.count > 0 ? (
+                  <div className="flex items-center gap-3 text-sm border-b pb-4 border-gray-100">
+                    <div className="flex-1">
+                      <p className="text-[10px] text-gray-400 font-bold uppercase">On Hold</p>
+                      <p className="font-black text-amber-600">{formatCurrency(summary.onHold)}</p>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-[10px] text-gray-400 font-bold uppercase">Released</p>
+                      <p className="font-black text-green-600">{formatCurrency(summary.released)}</p>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-[10px] text-gray-400 font-bold uppercase">Total</p>
+                      <p className="font-black text-gray-800">{formatCurrency(summary.total)}</p>
+                    </div>
+                  </div>
+                ) : null;
+              })()}
               <div className="space-y-2 text-left">
                 <div className="flex items-center gap-2 text-sm text-gray-600">
                   <Mail className="h-4 w-4 text-amber-500" /> {agent.email || 'No email'}
@@ -243,49 +296,13 @@ useEffect(() => {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="commissionType" className="text-xs font-bold uppercase text-gray-400">Commission Type</Label>
-              <Select 
-                value={editingAgent?.commissionType || 'percentage'} 
-                onValueChange={(v) => setEditingAgent({...editingAgent, commissionType: v})}
-              >
-                <SelectTrigger id="commissionType" className="h-11 bg-gray-50/50 border-none ring-1 ring-gray-200">
-                  <SelectValue placeholder="Select Type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="percentage">Percentage</SelectItem>
-                  <SelectItem value="fixed_commission">Fixed Commission</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800 flex gap-3">
+              <Info className="h-5 w-5 shrink-0 mt-0.5 text-amber-600" />
+              <div>
+                <strong className="block mb-1">Fixed / Surplus Commission Model</strong>
+                Commission is calculated automatically as the surplus amount (total payment from guest minus the unit base rate for the nights stayed).
+              </div>
             </div>
-
-            {editingAgent?.commissionType === 'percentage' ? (
-              <div className="space-y-2">
-                <Label htmlFor="agentCommission" className="text-xs font-bold uppercase text-gray-400">Rate (%)</Label>
-                <div className="relative">
-                  <Percent className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                  <Input 
-                    id="agentCommission"
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="1"
-                    className="h-11 pl-10 bg-gray-50/50 border-none ring-1 ring-gray-200"
-                    value={editingAgent?.commissionRate || 0} 
-                    onChange={(e) => setEditingAgent({...editingAgent, commissionRate: parseFloat(e.target.value)})}
-                    required
-                  />
-                </div>
-              </div>
-            ) : (
-              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800 flex gap-3">
-                <Info className="h-5 w-5 shrink-0 mt-0.5 text-amber-600" />
-                <div>
-                  <strong className="block mb-1">Fixed Commission:</strong>
-                  Agents will earn the surplus amount when they book a unit for a price higher than its base rate. No percentage rate is needed.
-                </div>
-              </div>
-            )}
 
             <div className="space-y-2">
               <Label htmlFor="agentJoinDate" className="text-xs font-bold uppercase text-gray-400">Join Date</Label>
@@ -309,6 +326,40 @@ useEffect(() => {
               </Button>
             </DialogFooter>
           </form>
+
+          {/* Commissions Section - only visible when editing existing agent */}
+          {editingAgent?.id && (
+            <div className="border-t px-6 py-4 space-y-3 max-h-[300px] overflow-y-auto">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-black uppercase text-gray-400 tracking-widest">Commissions ({monthKey})</h4>
+                <Badge variant="outline" className="text-[10px]">{editingAgentCommissions.length} entries</Badge>
+              </div>
+              {editingAgentCommissions.length > 0 ? (
+                <div className="space-y-2">
+                  {editingAgentCommissions.map((c) => (
+                    <div key={c.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl text-sm">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-gray-800 truncate text-xs">{c.title || 'Commission'}</p>
+                        <p className="text-[10px] text-gray-400 mt-0.5">{c.date?.split('T')[0]}</p>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="font-black text-gray-800">{formatCurrency(c.amount)}</span>
+                        {c.commissionStatus === 'released' ? (
+                          <Badge className="bg-green-100 text-green-700 border-none text-[9px] uppercase">Released</Badge>
+                        ) : (
+                          <Button size="sm" variant="outline" className="h-7 text-[10px] font-bold text-amber-700 border-amber-200 hover:bg-amber-50" onClick={() => handleReleaseCommission(c)}>
+                            <Check className="h-3 w-3 mr-1" /> Release
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400 text-center py-4 italic">No commissions for this month.</p>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

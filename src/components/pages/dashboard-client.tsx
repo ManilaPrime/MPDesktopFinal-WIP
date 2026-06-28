@@ -4,7 +4,13 @@ import React, { useMemo, useEffect, useState } from 'react';
 import { useUser, useAuth } from '@/firebase';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useDateStore } from '@/lib/date-store';
-import { formatCurrency, calculateProratedRevenue } from '@/lib/utils-app';
+import { 
+  calculateProratedRevenue, 
+  calculateProratedBaseRevenue,
+  formatCurrency, 
+  getDaysInMonth,
+  parseLocalOnly
+} from '@/lib/utils-app';
 import { apiClient } from '@/lib/api-client';
 import { useAppResources } from '@/lib/app-data-store';
 import { cn } from '@/lib/utils';
@@ -24,10 +30,14 @@ import {
   CheckCircle2, 
   AlertCircle,
   ArrowUpRight,
+  ArrowDownRight,
+  CheckSquare,
   Clock,
   CircleDashed,
   Loader2,
-  Lightbulb
+  Lightbulb,
+  Building2,
+  Crown
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip } from 'recharts';
@@ -38,13 +48,14 @@ export default function DashboardClient() {
   const auth = useAuth();
   const { month, year } = useDateStore();
   
-  const dashboardResources = useAppResources(['units', 'bookings', 'expenses', 'booking-payments', 'reminders']);
+  const dashboardResources = useAppResources(['units', 'bookings', 'expenses', 'booking-payments', 'reminders', 'investors']);
   const apiData = useMemo(() => ({
     units: dashboardResources.data['units'] ?? [],
     bookings: dashboardResources.data['bookings'] ?? [],
     expenses: dashboardResources.data['expenses'] ?? [],
     bookingPayments: dashboardResources.data['booking-payments'] ?? [],
     reminders: dashboardResources.data['reminders'] ?? [],
+    investors: dashboardResources.data['investors'] ?? [],
   }), [dashboardResources.data]);
   const apiLoading = dashboardResources.loading || isUserLoading;
   const error = dashboardResources.error;
@@ -57,13 +68,79 @@ export default function DashboardClient() {
   const stats = useMemo(() => {
     if (!apiData) return null;
     const { units, bookings, expenses, bookingPayments } = apiData;
+
+    const getOverlapNights = (b: any) => {
+      const checkinStr = b.checkinDate || b.checkIn;
+      const checkoutStr = b.checkoutDate || b.checkOut;
+      if (!checkinStr || !checkoutStr) return 0;
+      
+      const checkin = parseLocalOnly(checkinStr);
+      const checkout = parseLocalOnly(checkoutStr);
+      if (!checkin || !checkout) return 0;
+
+      const targetMonthStart = new Date(year, month, 1);
+      const nextMonthStart = new Date(year, month + 1, 1);
+
+      const overlapStart = new Date(Math.max(targetMonthStart.getTime(), checkin.getTime()));
+      const overlapEnd = new Date(Math.min(nextMonthStart.getTime(), checkout.getTime()));
+
+      const overlapNights = Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 86400000);
+      return overlapNights > 0 ? overlapNights : 0;
+    };
     
-    const currentMonthBookings = bookings.filter(b => b.checkIn?.startsWith(monthKey) || b.checkOut?.startsWith(monthKey));
-    const income = bookings.reduce((sum, b) => sum + calculateProratedRevenue(b, month, year), 0);
-    const totalExpenses = expenses.filter(e => e.date?.startsWith(monthKey)).reduce((sum, e) => sum + Number(e.calculatedTotal || e.amount || 0), 0);
+    const currentMonthBookings = bookings.filter(b => getOverlapNights(b) > 0);
+    const revenue = bookings.reduce((sum, b) => sum + calculateProratedRevenue(b, month, year), 0);
+    const grossIncome = bookings.reduce((sum, b) => sum + calculateProratedBaseRevenue(b, month, year), 0);
+    const totalExpenses = expenses.filter(e => e.date?.startsWith(monthKey) && e.category !== 'Agent Commission').reduce((sum, e) => sum + Number(e.calculatedTotal || e.amount || 0), 0);
     const collected = bookingPayments.filter(p => p.paidAt?.startsWith(monthKey)).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-    const uncollected = Math.max(0, income - collected);
-    const netProfit = income - totalExpenses;
+    
+    // Calculate Pending Payments (uncollected) stay-date-based: sum of prorated unpaid balances of current month's bookings
+    const uncollected = bookings.reduce((sum, b) => {
+      const overlapNights = getOverlapNights(b);
+      if (overlapNights <= 0) return sum;
+
+      const checkin = parseLocalOnly(b.checkinDate || b.checkIn);
+      const checkout = parseLocalOnly(b.checkoutDate || b.checkOut);
+      if (!checkin || !checkout) return sum;
+
+      const totalNights = Math.max(1, Math.round((checkout.getTime() - checkin.getTime()) / 86400000));
+      
+      const bookingPaid = bookingPayments
+        .filter(p => String(p.bookingId) === String(b.id) && p.status?.toLowerCase() === 'paid')
+        .reduce((sumP, p) => sumP + (Number(p.amount) || 0), 0);
+
+      const totalAmount = Number(b.totalAmount) || 0;
+      const unpaidBalance = Math.max(0, totalAmount - bookingPaid);
+      const proratedUnpaid = unpaidBalance * (overlapNights / totalNights);
+      return sum + proratedUnpaid;
+    }, 0);
+
+    const income = grossIncome - totalExpenses;
+    const ownerShare = income / 6;
+    const companyShare = (income * 5) / 6;
+    
+    // Calculate Total Investor Payout
+    let totalInvestorShare = 0;
+    const investors = apiData.investors;
+    investors.forEach(investor => {
+      const assignedUnitIds = investor.unitIds?.map(String) || [];
+      let iGrossIncome = 0, iExpense = 0;
+      assignedUnitIds.forEach((uId: string) => {
+        const uGrossIncome = bookings.filter(b => String(b.unitId || b.unit_id) === uId).reduce((sum, b) => sum + calculateProratedBaseRevenue(b, month, year), 0);
+        const uExpense = expenses.filter(e => e.date?.startsWith(monthKey) && e.unitIds?.map(String).includes(uId) && e.category !== 'Agent Commission').reduce((sum, e) => {
+          const total = Number(e.calculatedTotal || e.amount || 0);
+          return sum + (total / (e.unitIds?.length || 1));
+        }, 0);
+        iGrossIncome += uGrossIncome;
+        iExpense += uExpense;
+      });
+      const netProfit = iGrossIncome - iExpense;
+      const invCompanyShare = netProfit * (5 / 6);
+      const iShare = Math.max(0, invCompanyShare * (Number(investor.sharePercentage || 0) / 100));
+      totalInvestorShare += iShare;
+    });
+
+    const netCompanyShare = companyShare - totalInvestorShare;
     
     const activeUnitIds = new Set(bookings
       .filter(b => calculateProratedRevenue(b, month, year) > 0)
@@ -71,16 +148,25 @@ export default function DashboardClient() {
     
     const activeCount = activeUnitIds.size;
     const occupancyRate = units.length > 0 ? Math.round((activeCount / units.length) * 100) : 0;
-    const pendingBookingsCount = bookings.filter(b => b.status === 'pending' || b.paymentStatus === 'unpaid').length;
+    
+    // Issue B: Filter pending bookings count to only include unpaid bookings overlapping the selected month
+    const pendingBookingsCount = bookings.filter(b => {
+      const isUnpaid = b.paymentStatus?.toLowerCase() === 'unpaid';
+      return isUnpaid && getOverlapNights(b) > 0;
+    }).length;
 
     return {
       totalUnits: units.length,
       totalBookings: currentMonthBookings.length,
+      revenue,
       income,
+      ownerShare,
+      companyShare,
+      netCompanyShare,
+      totalInvestorShare,
       collected,
       uncollected,
       expenses: totalExpenses,
-      netProfit,
       activeCount,
       occupancyRate,
       pendingBookingsCount
@@ -92,8 +178,8 @@ export default function DashboardClient() {
     if (!apiData) return [];
     const today = new Date().toISOString().split('T')[0];
     return apiData.bookings
-      .filter(b => b.checkIn >= today)
-      .sort((a, b) => a.checkIn.localeCompare(b.checkIn))
+      .filter(b => (b.checkinDate || b.checkIn || '') >= today)
+      .sort((a, b) => (a.checkinDate || a.checkIn || '').localeCompare(b.checkinDate || b.checkIn || ''))
       .slice(0, 5);
   }, [apiData]);
 
@@ -109,7 +195,7 @@ export default function DashboardClient() {
     setIsAiLoading(true);
     try {
       const { summary } = await apiClient.post<{ summary: string }>('/ai/report-summary', {
-        reportData: { ...stats, period: monthKey }
+        reportData: { ...stats, revenue: stats.revenue, income: stats.income, period: monthKey }
       }, auth);
       setAiInsight(summary);
     } catch (e) {
@@ -145,29 +231,55 @@ export default function DashboardClient() {
   const mockRevenueData = [
     { name: 'May 1', value: 20000 }, { name: 'May 8', value: 45000 },
     { name: 'May 15', value: 38000 }, { name: 'May 22', value: 85000 },
-    { name: 'May 29', value: stats.income }
+    { name: 'May 29', value: stats.revenue }
   ];
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 max-w-[1600px] mx-auto pb-10">
       
       {/* ROW 1: KPIs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        <KPICard 
+          title="Revenue" 
+          value={formatCurrency(stats.revenue)} 
+          subtext={new Date(year, month).toLocaleString('default', { month: 'long', year: 'numeric' })}
+          icon={<DollarSign size={24} className="text-green-500" />} 
+          iconBg="bg-green-50"
+        />
+        <KPICard 
+          title="Income" 
+          value={formatCurrency(stats.income)} 
+          subtext="Revenue − Expenses"
+          icon={<TrendingUp size={24} className="text-purple-500" />} 
+          iconBg="bg-purple-50"
+        />
+        <KPICard 
+          title="Gross Company Share" 
+          value={formatCurrency(stats.companyShare)} 
+          subtext="5/6 of Income"
+          icon={<Building2 size={24} className="text-blue-500" />} 
+          iconBg="bg-blue-50"
+        />
+        <KPICard 
+          title="Net Company Share" 
+          value={formatCurrency(stats.netCompanyShare)} 
+          subtext="Gross − Investor Payouts"
+          icon={<Building2 size={24} className="text-indigo-500" />} 
+          iconBg="bg-indigo-50"
+        />
+        <KPICard 
+          title="Owner's Share" 
+          value={formatCurrency(stats.ownerShare)} 
+          subtext="1/6 of Income"
+          icon={<Crown size={24} className="text-amber-500" />} 
+          iconBg="bg-amber-50"
+        />
         <KPICard 
           title="Total Bookings" 
           value={stats.totalBookings.toString()} 
-          subtext="+12% vs last month"
+          subtext={new Date(year, month).toLocaleString('default', { month: 'long', year: 'numeric' })}
           icon={<CalendarDays size={24} className="text-blue-500" />} 
           iconBg="bg-blue-50"
-          trend="up"
-        />
-        <KPICard 
-          title={`Revenue (${new Date(year, month).toLocaleString('default', { month: 'short', year: 'numeric' })})`} 
-          value={formatCurrency(stats.income)} 
-          subtext="+18% vs last month"
-          icon={<DollarSign size={24} className="text-green-500" />} 
-          iconBg="bg-green-50"
-          trend="up"
         />
         <KPICard 
           title="Occupied Units" 
@@ -182,14 +294,6 @@ export default function DashboardClient() {
           subtext={`${stats.pendingBookingsCount} Bookings`}
           icon={<Wallet size={24} className="text-red-500" />} 
           iconBg="bg-red-50"
-        />
-        <KPICard 
-          title="Net Profit (May)" 
-          value={formatCurrency(stats.netProfit)} 
-          subtext="+22% vs last month"
-          icon={<TrendingUp size={24} className="text-purple-500" />} 
-          iconBg="bg-purple-50"
-          trend="up"
         />
       </div>
 
@@ -246,7 +350,7 @@ export default function DashboardClient() {
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm font-medium text-gray-700">{booking.checkIn}</p>
+                    <p className="text-sm font-medium text-gray-700">{booking.checkinDate || booking.checkIn}</p>
                     <p className="text-xs text-gray-400">{booking.checkInTime || '2:00 PM'}</p>
                   </div>
                 </div>
@@ -272,7 +376,7 @@ export default function DashboardClient() {
                   <div key={i} className="flex items-center justify-between">
                     <div>
                       <p className="text-sm font-bold text-gray-800 line-clamp-1">{booking.guestName || 'Unknown Guest'}</p>
-                      <p className="text-xs text-gray-500">{booking.unitId} • {booking.checkIn}</p>
+                      <p className="text-xs text-gray-500">{booking.unitId} • {booking.checkinDate || booking.checkIn}</p>
                     </div>
                     <div className="flex items-center gap-3">
                       <span className={cn(
@@ -320,11 +424,11 @@ export default function DashboardClient() {
             
             <div className="space-y-3 px-4">
               <div className="flex justify-between items-center text-sm">
-                <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-sm bg-green-600"></div><span className="text-gray-600">Fully Paid ({Math.round((stats.collected/(stats.income||1))*100)}%)</span></div>
+                <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-sm bg-green-600"></div><span className="text-gray-600">Fully Paid ({Math.round((stats.collected/(stats.revenue||1))*100)}%)</span></div>
                 <span className="font-bold text-gray-800">{formatCurrency(stats.collected)}</span>
               </div>
               <div className="flex justify-between items-center text-sm">
-                <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-sm bg-red-500"></div><span className="text-gray-600">Unpaid/Balance ({Math.round((stats.uncollected/(stats.income||1))*100)}%)</span></div>
+                <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-sm bg-red-500"></div><span className="text-gray-600">Unpaid/Balance ({Math.round((stats.uncollected/(stats.revenue||1))*100)}%)</span></div>
                 <span className="font-bold text-gray-800">{formatCurrency(stats.uncollected)}</span>
               </div>
             </div>
@@ -375,7 +479,7 @@ export default function DashboardClient() {
           </CardHeader>
           <CardContent>
             <div className="mb-2">
-              <span className="text-2xl font-black text-gray-800 mr-2">{formatCurrency(stats.income)}</span>
+              <span className="text-2xl font-black text-gray-800 mr-2">{formatCurrency(stats.revenue)}</span>
               <span className="text-xs text-green-600 font-bold bg-green-50 px-1.5 py-0.5 rounded">↑ 18% vs last month</span>
             </div>
             <div className="h-[120px] w-full mt-4">

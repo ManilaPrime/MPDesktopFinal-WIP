@@ -1,13 +1,12 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { useUser, useAuth, useFirestore } from '@/firebase';
+import { useUser, useAuth } from '@/firebase';
 import { apiClient } from '@/lib/api-client';
 import { useAppResources } from '@/lib/app-data-store';
 import { useDateStore } from '@/lib/date-store';
 import { formatCurrency } from '@/lib/utils-app';
 import { cn } from '@/lib/utils';
-import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts';
 
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
@@ -53,6 +52,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   'Repairs': '#f59e0b',   // Orange
   'Supplies': '#22c55e',  // Green
   'Rent': '#8b5cf6',      // Purple
+  'Agent Commission': '#f97316', // Dark Orange
   'Other Expenses': '#ef4444', // Red
 };
 
@@ -64,13 +64,13 @@ function toNumber(value: any, fallback = 0) {
 export default function ExpensesClient() {
   const { user } = useUser();
   const auth = useAuth();
-  const firestore = useFirestore();
   const { toast } = useToast();
   const { month, year } = useDateStore();
 
-  const resources = useAppResources(['expenses', 'units']);
+  const resources = useAppResources(['expenses', 'units', 'agents']);
   const expenses = resources.data['expenses'] ?? [];
   const units = resources.data['units'] ?? [];
+  const agents = resources.data['agents'] ?? [];
   const loading = resources.loading;
 
   // Modals & Forms
@@ -172,14 +172,11 @@ export default function ExpensesClient() {
       };
 
       if (editingExpense.id) {
-        await apiClient.put(`/expense/${editingExpense.id}`, payload, auth).catch(() => null);
-        await setDoc(doc(firestore, 'expenses', editingExpense.id), payload, { merge: true });
+        await apiClient.put(`/expense/${editingExpense.id}`, payload, auth);
         toast({ title: "Success", description: "Expense updated successfully." });
       } else {
         payload.createdAt = new Date().toISOString();
-        const res = await apiClient.post<any>('/expense', payload, auth).catch(() => ({ id: `exp-${Date.now()}` }));
-        const newId = String(res?.id || res?.data?.id || `exp-${Date.now()}`);
-        await setDoc(doc(firestore, 'expenses', newId), { ...payload, id: newId }, { merge: true });
+        await apiClient.post<any>('/expense', payload, auth);
         toast({ title: "Success", description: "Expense recorded successfully." });
       }
 
@@ -195,8 +192,7 @@ export default function ExpensesClient() {
   const handleDeleteExpense = async (expense: any) => {
     if (!confirm(`Delete expense "${expense.title}"?`)) return;
     try {
-      await apiClient.delete(`/expense/${expense.id}`, auth).catch(() => null);
-      await deleteDoc(doc(firestore, 'expenses', String(expense.id)));
+      await apiClient.delete(`/expense/${expense.id}`, auth);
       toast({ title: "Deleted", description: "Expense removed." });
       await resources.refresh();
     } catch (error: any) {
@@ -332,6 +328,7 @@ export default function ExpensesClient() {
               <option value="Repairs">Repairs</option>
               <option value="Supplies">Supplies</option>
               <option value="Rent">Rent</option>
+              <option value="Agent Commission">Agent Commission</option>
               <option value="Other Expenses">Other Expenses</option>
             </select>
           </div>
@@ -388,8 +385,14 @@ export default function ExpensesClient() {
                       {expense.category}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-sm text-gray-600">{expense.unitName || 'General/Unassigned'}</TableCell>
-                  <TableCell className="text-[10px] font-bold text-gray-400">{expense.paymentMethod || 'CASH'}</TableCell>
+                  <TableCell className="text-sm text-gray-600">{expense.category === 'Agent Commission' ? (expense.agentName || 'N/A') : (expense.unitName || 'General/Unassigned')}</TableCell>
+                  <TableCell className="text-[10px] font-bold text-gray-400">
+                    {expense.category === 'Agent Commission' ? (
+                      <Badge className={cn('border-none text-[9px] uppercase font-bold', expense.commissionStatus === 'released' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700')}>
+                        {expense.commissionStatus || 'on hold'}
+                      </Badge>
+                    ) : (expense.paymentMethod || 'CASH')}
+                  </TableCell>
                   <TableCell className="text-right font-black text-red-600">{formatCurrency(expense.amount)}</TableCell>
                   <TableCell>
                     <DropdownMenu modal={false}>
@@ -448,6 +451,7 @@ export default function ExpensesClient() {
                   <option value="Repairs">Repairs</option>
                   <option value="Supplies">Supplies</option>
                   <option value="Rent">Rent</option>
+                  <option value="Agent Commission">Agent Commission</option>
                   <option value="Other Expenses">Other Expenses</option>
                 </select>
               </div>
@@ -468,6 +472,28 @@ export default function ExpensesClient() {
                 {units.map(u => <option key={u.id} value={String(u.id)}>{u.name || u.unitNumber}</option>)}
               </select>
             </div>
+
+            {editingExpense?.category === 'Agent Commission' && (
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase font-bold text-gray-400">Agent</Label>
+                  <select className="w-full h-11 border rounded-xl text-sm bg-gray-50/50 ring-1 ring-gray-200 px-3" value={editingExpense?.agentId || ''} onChange={e => {
+                    const agent = agents.find(a => String(a.id) === e.target.value);
+                    setEditingExpense({...editingExpense, agentId: e.target.value, agentName: agent?.name || ''});
+                  }} required>
+                    <option value="">Select Agent</option>
+                    {agents.map(a => <option key={a.id} value={String(a.id)}>{a.name}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase font-bold text-gray-400">Commission Status</Label>
+                  <select className="w-full h-11 border rounded-xl text-sm bg-gray-50/50 ring-1 ring-gray-200 px-3" value={editingExpense?.commissionStatus || 'on hold'} onChange={e => setEditingExpense({...editingExpense, commissionStatus: e.target.value})}>
+                    <option value="on hold">On Hold</option>
+                    <option value="released">Released</option>
+                  </select>
+                </div>
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label className="text-xs uppercase font-bold text-gray-400">Additional Notes</Label>

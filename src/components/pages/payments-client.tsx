@@ -24,8 +24,12 @@ import {
   Save, 
   Undo2,
   MoreVertical,
-  Edit2
+  Edit2,
+  DollarSign,
+  AlertCircle,
+  ShieldCheck
 } from 'lucide-react';
+import { Card } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -39,9 +43,11 @@ import {
   DropdownMenuTrigger 
 } from '@/components/ui/dropdown-menu';
 import { useToast } from '@/hooks/use-toast';
-import { formatCurrency } from '@/lib/utils-app';
+import { formatCurrency, parseLocalOnly } from '@/lib/utils-app';
 import { useDateStore } from '@/lib/date-store';
+import { useDialogCleanup } from '@/hooks/use-dialog-cleanup';
 import { cn } from '@/lib/utils';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 export default function PaymentsClient() {
   const { user } = useUser();
@@ -61,26 +67,9 @@ export default function PaymentsClient() {
   const [isRefundOpen, setIsRefundOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState<any>(null);
+  const [activeTab, setActiveTab] = useState<'payments' | 'deposits'>('payments');
 
-  useEffect(() => {
-    const anyDialogOpen = isCollectionOpen || isRefundOpen || isEditOpen;
-
-    if (anyDialogOpen) return;
-
-    const cleanupDocumentInteractivity = () => {
-      document.body.style.pointerEvents = '';
-      document.body.removeAttribute('data-scroll-locked');
-    };
-
-    cleanupDocumentInteractivity();
-    const timeoutId = window.setTimeout(cleanupDocumentInteractivity, 0);
-    const frameId = window.requestAnimationFrame(cleanupDocumentInteractivity);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [isCollectionOpen, isRefundOpen, isEditOpen]);
+  useDialogCleanup(isCollectionOpen || isRefundOpen || isEditOpen);
 
 
   const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
@@ -104,6 +93,77 @@ export default function PaymentsClient() {
       .filter(item => item.paidAt?.startsWith(monthKey))
       .sort((a, b) => new Date(b.paidAt).getTime() - new Date(a.date || a.paidAt).getTime());
   }, [bookingPayments, securityDeposits, monthKey]);
+
+  const filteredLedger = useMemo(() => {
+    return mergedLedger.filter(item => {
+      if (activeTab === 'payments') return item._type === 'payment';
+      if (activeTab === 'deposits') return item._type === 'deposit';
+      return true;
+    });
+  }, [mergedLedger, activeTab]);
+
+  const paymentStats = useMemo(() => {
+    // Collected: booking-payments with status 'Paid' for the month
+    const collected = bookingPayments
+      .filter(p => p.paidAt?.startsWith(monthKey) && p.status?.toLowerCase() === 'paid')
+      .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
+    const getOverlapNights = (b: any) => {
+      const checkinStr = b.checkinDate || b.checkIn;
+      const checkoutStr = b.checkoutDate || b.checkOut;
+      if (!checkinStr || !checkoutStr) return 0;
+      
+      const checkin = parseLocalOnly(checkinStr);
+      const checkout = parseLocalOnly(checkoutStr);
+      if (!checkin || !checkout) return 0;
+
+      const targetMonthStart = new Date(year, month, 1);
+      const nextMonthStart = new Date(year, month + 1, 1);
+
+      const overlapStart = new Date(Math.max(targetMonthStart.getTime(), checkin.getTime()));
+      const overlapEnd = new Date(Math.min(nextMonthStart.getTime(), checkout.getTime()));
+
+      const overlapNights = Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 86400000);
+      return overlapNights > 0 ? overlapNights : 0;
+    };
+
+    // Uncollected stay-date-based: sum of prorated unpaid balances of current month's bookings
+    const uncollected = bookings.reduce((sum, b) => {
+      const overlapNights = getOverlapNights(b);
+      if (overlapNights <= 0) return sum;
+
+      const checkin = parseLocalOnly(b.checkinDate || b.checkIn);
+      const checkout = parseLocalOnly(b.checkoutDate || b.checkOut);
+      if (!checkin || !checkout) return sum;
+
+      const totalNights = Math.max(1, Math.round((checkout.getTime() - checkin.getTime()) / 86400000));
+      
+      const bookingPaid = bookingPayments
+        .filter(p => String(p.bookingId) === String(b.id) && p.status?.toLowerCase() === 'paid')
+        .reduce((sumP, p) => sumP + (Number(p.amount) || 0), 0);
+
+      const totalAmount = Number(b.totalAmount) || 0;
+      const unpaidBalance = Math.max(0, totalAmount - bookingPaid);
+      const proratedUnpaid = unpaidBalance * (overlapNights / totalNights);
+      return sum + proratedUnpaid;
+    }, 0);
+
+    // Deposits Collected: type='receive' and status is 'paid', 'collected', or 'received' (but NOT 'refunded')
+    const depositsCollected = securityDeposits
+      .filter(d => d.paidAt?.startsWith(monthKey) && 
+        d.type === 'receive' &&
+        ['paid', 'collected', 'received'].includes(d.status?.toLowerCase()) &&
+        d.status?.toLowerCase() !== 'refunded')
+      .reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+
+    // Deposits Refunded: status is 'refunded' OR type is 'refund' for the month
+    const depositsRefunded = securityDeposits
+      .filter(d => d.paidAt?.startsWith(monthKey) && 
+        (d.status?.toLowerCase() === 'refunded' || d.type === 'refund'))
+      .reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+
+    return { collected, uncollected, depositsCollected, depositsRefunded };
+  }, [bookingPayments, securityDeposits, bookings, monthKey, month, year]);
 
   const handleSaveCollection = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -241,6 +301,49 @@ export default function PaymentsClient() {
         </div>
       </div>
 
+      {/* Stats Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card className="border-none shadow-sm rounded-2xl p-5">
+          <div className="flex items-start"><div className="p-3 rounded-xl bg-green-50"><DollarSign className="h-5 w-5 text-green-600" /></div></div>
+          <div className="mt-3">
+            <p className="text-[11px] text-gray-500 font-medium uppercase tracking-wide">Collected Payments</p>
+            <h3 className="text-xl font-black text-gray-800 mt-1">{formatCurrency(paymentStats.collected)}</h3>
+            <p className="text-[10px] text-gray-400 mt-1">Paid revenue this month</p>
+          </div>
+        </Card>
+        <Card className="border-none shadow-sm rounded-2xl p-5">
+          <div className="flex items-start"><div className="p-3 rounded-xl bg-red-50"><AlertCircle className="h-5 w-5 text-red-600" /></div></div>
+          <div className="mt-3">
+            <p className="text-[11px] text-gray-500 font-medium uppercase tracking-wide">Uncollected Payments</p>
+            <h3 className="text-xl font-black text-gray-800 mt-1">{formatCurrency(paymentStats.uncollected)}</h3>
+            <p className="text-[10px] text-gray-400 mt-1">Unpaid + unrecorded revenue</p>
+          </div>
+        </Card>
+        <Card className="border-none shadow-sm rounded-2xl p-5">
+          <div className="flex items-start"><div className="p-3 rounded-xl bg-blue-50"><ShieldCheck className="h-5 w-5 text-blue-600" /></div></div>
+          <div className="mt-3">
+            <p className="text-[11px] text-gray-500 font-medium uppercase tracking-wide">Deposits Collected</p>
+            <h3 className="text-xl font-black text-gray-800 mt-1">{formatCurrency(paymentStats.depositsCollected)}</h3>
+            <p className="text-[10px] text-gray-400 mt-1">Security deposits received</p>
+          </div>
+        </Card>
+        <Card className="border-none shadow-sm rounded-2xl p-5">
+          <div className="flex items-start"><div className="p-3 rounded-xl bg-amber-50"><Undo2 className="h-5 w-5 text-amber-600" /></div></div>
+          <div className="mt-3">
+            <p className="text-[11px] text-gray-500 font-medium uppercase tracking-wide">Deposits Refunded</p>
+            <h3 className="text-xl font-black text-gray-800 mt-1">{formatCurrency(paymentStats.depositsRefunded)}</h3>
+            <p className="text-[10px] text-gray-400 mt-1">Security deposits returned</p>
+          </div>
+        </Card>
+      </div>
+
+      <Tabs value={activeTab} onValueChange={(val: any) => setActiveTab(val)} className="w-full">
+        <TabsList className="grid w-full grid-cols-2 max-w-sm">
+          <TabsTrigger value="payments">Booking Payments</TabsTrigger>
+          <TabsTrigger value="deposits">Security Deposits</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
       <div className="rounded-xl border bg-white shadow-md overflow-hidden text-left">
         <Table>
           <TableHeader className="bg-gray-50/50">
@@ -256,11 +359,11 @@ export default function PaymentsClient() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {mergedLedger.map((item) => {
+            {filteredLedger.map((item) => {
               const booking = bookings.find(b => String(b.id) === String(item.bookingId));
               const unit = units.find(u => String(u.id) === String(item.unitId || booking?.unitId));
               const isIncome = item._type === 'payment';
-              const isRefund = item.type === 'refund';
+              const isRefund = item.type === 'refund' || item.status?.toLowerCase() === 'refunded';
               const unitName = item.unitName || unit?.name || unit?.unitNumber || 'N/A';
               
               return (
@@ -297,9 +400,11 @@ export default function PaymentsClient() {
                 </TableRow>
               );
             })}
-            {mergedLedger.length === 0 && (
+            {filteredLedger.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} className="h-32 text-center text-muted-foreground italic">No payment records found for this month.</TableCell>
+                <TableCell colSpan={8} className="h-32 text-center text-muted-foreground italic">
+                  No {activeTab === 'payments' ? 'booking payment' : 'security deposit'} records found for this month.
+                </TableCell>
               </TableRow>
             )}
           </TableBody>

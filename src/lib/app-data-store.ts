@@ -34,8 +34,8 @@ const RESOURCE_CONFIG: Record<ResourceName, { endpoint: string; firestoreCollect
   units: { endpoint: '/units', firestoreCollections: ['units'] },
   bookings: { endpoint: '/bookings', firestoreCollections: ['bookings'] },
   expenses: { endpoint: '/expenses', firestoreCollections: ['expenses'] },
-  'booking-payments': { endpoint: '/booking-payments', firestoreCollections: ['bookingPayments', 'booking-payments', 'booking_payments'] },
-  'security-deposits': { endpoint: '/security-deposits', firestoreCollections: ['securityDeposits', 'security-deposits', 'security_deposits'] },
+  'booking-payments': { endpoint: '/booking-payments', firestoreCollections: ['booking-payments'] },
+  'security-deposits': { endpoint: '/security-deposits', firestoreCollections: ['security-deposits'] },
   reminders: { endpoint: '/reminders', firestoreCollections: ['reminders'] },
   agents: { endpoint: '/agents', firestoreCollections: ['agents'] },
   investors: { endpoint: '/investors', firestoreCollections: ['investors'] },
@@ -184,11 +184,13 @@ export function useAppResources(resources: ResourceName[], options?: UseAppResou
     await ensureResources(list, { auth, firestore, userId: user?.uid }, true);
   }, [resources, invalidateResources, ensureResources, auth, firestore, user?.uid]);
 
+  const resourceList = useMemo(() => key.split('|') as ResourceName[], [key]);
+
   return useMemo(() => {
-    const resourceData = Object.fromEntries(resources.map((resource) => [resource, data[resource] ?? []])) as Record<ResourceName, any[]>;
-    const loading = resources.some((resource) => Boolean(loadingMap[resource]) && !hasUsableData(data[resource]));
-    const backgroundLoading = resources.some((resource) => Boolean(backgroundLoadingMap[resource]));
-    const errors = resources
+    const resourceData = Object.fromEntries(resourceList.map((resource) => [resource, data[resource] ?? []])) as Record<ResourceName, any[]>;
+    const loading = resourceList.some((resource) => Boolean(loadingMap[resource]) && !hasUsableData(data[resource]));
+    const backgroundLoading = resourceList.some((resource) => Boolean(backgroundLoadingMap[resource]));
+    const errors = resourceList
       .map((resource) => errorMap[resource])
       .filter(Boolean)
       .join('\n');
@@ -201,5 +203,5 @@ export function useAppResources(resources: ResourceName[], options?: UseAppResou
       refresh,
       invalidate: invalidateResources,
     };
-  }, [resources, data, loadingMap, backgroundLoadingMap, errorMap, invalidateResources, refresh, options?.preloadOnly]);
+  }, [key, resourceList, data, loadingMap, backgroundLoadingMap, errorMap, invalidateResources, refresh, options?.preloadOnly]);
 }
